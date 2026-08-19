@@ -1,0 +1,97 @@
+{
+  "version": "1.0.0",
+  "_README": [
+    "문서별 보안 등급 정답. 분류 정확도 측정의 기준이다 (Day 2 게이트 G2).",
+    "",
+    "문서를 우리가 만들었으니 정답을 안다 — 그래서 정확도를 실측할 수 있다.",
+    "이게 샘플 데이터의 이점이다 (설계 §2.1).",
+    "",
+    "trap: true 항목은 별도 리포트한다. 놓치면 가장 위험한 오분류다.",
+    "",
+    "목표: 기밀 재현율 100% (하나라도 놓치면 실패), 전체 정확도 >= 90%",
+    "실행: make eval-classify"
+  ],
+
+  "labels": [
+    {
+      "path": "corpus/customer-H/req-spec-2026H.md",
+      "tier": "secret",
+      "reason": "고객사 요구사항명세서. 경로 규칙 corpus/customer-*/** + 헤더 '보안등급: 기밀' + 본문에 고객사명·계약번호·금액",
+      "note": "시나리오 1의 핵심 문서. REQ-4412 세션 바인딩 요구"
+    },
+    {
+      "path": "corpus/customer-H/benchmark-prod-2025-11.md",
+      "tier": "secret",
+      "reason": "고객 환경 프로덕션 실측. 경로 규칙 + 헤더 + 성능 수치가 고객사 인프라 규모를 역산 가능하게 한다",
+      "note": "시나리오 3 후속 질문의 폴백 유발. p99 840ms / 3120 TPS 를 담고 있으나 vocab 에 해당 슬롯이 없다"
+    },
+    {
+      "path": "corpus/kim/docs/sdk-pricing-tiers.md",
+      "tier": "secret",
+      "trap": true,
+      "reason": "⚠️ 함정 문서. 경로가 corpus/customer-*/ 가 아니고 헤더에 보안등급 표기가 없다. 본문 §4.1 의 고객사명(H社/하나텔) + 금액(12억원, 3억 2천만원, 4천만원)만이 단서다",
+      "note": "규칙 3번(금칙어 리터럴)과 4번(금액 정규식)이 이걸 잡아야 한다. 경로·헤더로는 internal 로 판정된다"
+    },
+    {
+      "path": "corpus/kim/docs/auth-design.md",
+      "tier": "internal",
+      "reason": "자사 설계 문서. 헤더 '보안등급: 사내'. 사내 프로젝트명(atlas-auth)·시스템명(Nova 게이트웨이) 포함",
+      "note": "시나리오 1의 두 번째 근거 문서. SDK v3.2 토큰 24시간 / 무음 갱신 / 바인딩 없음"
+    },
+    {
+      "path": "corpus/kim/notes/2025-11-auth.md",
+      "tier": "internal",
+      "reason": "개인 메모. 헤더 '보안등급: 사내', formality: informal",
+      "note": "시나리오 3 김책임 근거 (성능 이유). 2025-11, 비공식. 최민수 리뷰와 엇갈린다"
+    },
+    {
+      "path": "corpus/choi/docs/auth-review.md",
+      "tier": "internal",
+      "reason": "설계 리뷰 문서. 헤더 '보안등급: 사내'",
+      "note": "시나리오 3 최민수 근거 (레거시 SSO 호환 이유). 2025-12, 공식. 김책임 메모와 엇갈린다 — 둘 다 사실이다"
+    },
+    {
+      "path": "corpus/choi/docs/release-checklist.md",
+      "tier": "internal",
+      "reason": "릴리스 체크리스트. 헤더 '보안등급: 사내'"
+    },
+    {
+      "path": "corpus/park/scripts/preprocess_v3.py",
+      "tier": "internal",
+      "reason": "사내 스크립트. 주석 헤더 '보안등급: 사내'. 사내 프로젝트명 atlas_ml / atlas-ml 포함",
+      "note": "시나리오 2 기법 질문의 근거. 가명화 대상(atlas_ml)과 기술 용어(RandomOverSampler, balanced_subsample)가 한 줄에 섞여 있다"
+    },
+    {
+      "path": "corpus/park/configs/v3.yaml",
+      "tier": "internal",
+      "reason": "사내 설정 파일. 주석 헤더 '보안등급: 사내'",
+      "note": "시나리오 2 기법 질문의 두 번째 근거"
+    },
+    {
+      "path": "corpus/park/runs/2026-08-19/train.log",
+      "tier": "internal",
+      "reason": "실험 로그. 경로 규칙 corpus/** → internal. 사내 프로젝트명 atlas_ml 포함",
+      "note": "시나리오 2 실시간 상태의 근거. 로그는 마지막 200줄만 읽는다 (BR-S-10)"
+    },
+    {
+      "path": "corpus/public/oauth-rfc-summary.md",
+      "tier": "open",
+      "reason": "공개 표준 문서 요약. 경로 규칙 corpus/public/** + 헤더 '보안등급: 공개'. 사내 정보 없음",
+      "note": "OPEN 은 명시적 표기가 있는 문서만 받는다 (기본값은 INTERNAL)"
+    }
+  ],
+
+  "_targets": {
+    "secret_recall": 1.0,
+    "accuracy": 0.9,
+    "trap_recall": 1.0,
+    "_note": "Day 2 게이트. secret_recall 미달이면 Day 3 진입 금지 (설계 §7.2)"
+  },
+
+  "_asymmetry": [
+    "오분류를 상향/하향으로 구분해 리포트한다.",
+    "  상향 (internal -> secret): 불편. 답변이 무뎌진다",
+    "  하향 (secret -> internal): *** 유출 ***",
+    "비대칭이 명확하므로 애매하면 항상 더 높은 등급으로."
+  ]
+}

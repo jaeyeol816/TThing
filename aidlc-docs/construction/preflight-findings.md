@@ -105,7 +105,7 @@ AccessDeniedException: anthropic.claude-sonnet-5 is not available for this accou
 또한 모든 Claude 모델의 `inferenceTypesSupported`가 `["INFERENCE_PROFILE"]`이므로
 **`anthropic.` 접두사 그대로는 호출할 수 없고 `us.` / `global.` 추론 프로파일 ID가 필요하다.**
 
-실제로 호출에 성공한 모델 (측정된 왕복 지연):
+실제로 호출에 성공한 모델 (측정된 왕복 지연 — **4 토큰 응답 기준**):
 
 | 모델 ID | 지연 | 비고 |
 |---|---|---|
@@ -120,6 +120,41 @@ AccessDeniedException: anthropic.claude-sonnet-5 is not available for this accou
 > **설계 반영**: `AGENT_MODEL_ID` 기본값을 `us.anthropic.claude-sonnet-4-5-20250929-v1:0`로 두고
 > **환경변수로 교체 가능**하게 한다. 설계 문서의 `claude-sonnet-5`는 문서상 표기로만 남긴다.
 > 에스컬레이션 초안 생성은 haiku-4-5로 돌려 비용과 지연을 줄인다.
+
+### 발견 4-b — 실제 답변 지연은 9.2초다 (지연 예산 수정)
+
+Day 1 구현 후 시나리오 1의 실제 페이로드로 재측정했다.
+
+| 측정 | 입력 | 출력 | 지연 |
+|---|---|---|---|
+| 초기 (`"Reply with exactly: OK"`) | 12 tok | 4 tok | **2.17s** |
+| **실제 (시나리오 1 구조 페이로드)** | 460 tok | **513 tok** | **9.23s** |
+
+출력 토큰이 지연을 지배한다. 답변·이유·완화안 3개를 생성하면 500 토큰이 나온다.
+
+> **설계 반영 (지연 예산 수정)**: `u3/nfr-requirements.md` §1의 `send` 목표를
+> **< 4s 에서 < 12s 로** 고친다. 전체 예산은 여전히 안전하다.
+>
+> | 단계 | 수정 전 | 수정 후 | 근거 |
+> |---|---|---|---|
+> | `prepare` (1명) | < 6s | < 6s | EXAONE 0.42s x 3회 |
+> | `send` (1명) | < 4s | **< 12s** | 실측 9.23s |
+> | `send` (2명 병렬) | < 5s | **< 14s** | 병렬이므로 +2s |
+> | **합계** | ~10s | **~18s** | 상한 30s 대비 여유 12s |
+>
+> `AGENT_TIMEOUT_SECONDS=25` 는 그대로 둔다 (9.2s의 2.7배 여유).
+> 2명 병렬 + 에스컬레이션 초안(haiku)까지 더해도 30초 안에 들어온다.
+> 다만 **여유가 12초로 줄었으므로** 재시도를 남발할 수 없다 —
+> 타임아웃을 재시도하지 않는 정책(§1 발견 3의 재시도 규칙)이 여기서도 옳다.
+
+### 발견 4-c — EXAONE 이 `enable_thinking=False` 로 더 빨라졌다
+
+| 설정 | 지연 |
+|---|---|
+| `enable_thinking: true` (초기 측정) | 0.78 ~ 0.96s |
+| **`enable_thinking: false` (채택)** | **0.42s** |
+
+원문 유출 채널을 막은 것이 성능도 개선했다. 사고 과정 토큰을 생성하지 않기 때문이다.
 
 ### 발견 5 — 임시 자격증명은 만료된다 → 클라우드 브로커의 근거
 
@@ -216,3 +251,167 @@ AccessDeniedException: anthropic.claude-sonnet-5 is not available for this accou
 ```bash
 make preflight     # EXAONE 왕복 · Bedrock 모델 접근 · 리전 · CDK 부트스트랩 여부 확인
 ```
+
+---
+
+## 7. Day 1 구현 중 발견 (추가 실측)
+
+### 발견 7 — `Tier` 비교가 알파벳 순이었다 (조용한 유출)
+
+`schemas.py` 작성 후 `tests/unit/test_tier_order.py` 가 즉시 잡았다.
+
+```python
+@total_ordering
+class Tier(StrEnum):
+    def __lt__(self, other): return self.rank < other.rank
+```
+
+`functools.total_ordering` 은 **`__gt__` 를 주입하지 못한다.** 실측 확인:
+
+```
+__lt__ in T.__dict__  : True
+__gt__ in T.__dict__  : False
+T.__gt__ is str.__gt__: True      <- str 의 알파벳 비교가 남았다
+```
+
+`max()` 는 `__gt__` 를 쓴다. 그래서:
+
+```
+max(Tier.INTERNAL, Tier.OPEN)  ->  Tier.OPEN     ⚠️ 틀렸다
+```
+
+FR-11(동원된 지식 중 최고 등급이 호출 전체에 걸린다)이 `max(tiers)` 한 줄로
+표현되므로, **사내 문서가 공개로 판정되어 원문이 그대로 나간다.**
+예외도 없고 로그도 없다 — 조용한 유출이다.
+
+> **조치**: `__lt__` `__le__` `__gt__` `__ge__` 4개를 **명시적으로** 정의했다.
+> 보안 결정적 비교를 데코레이터의 미묘함에 의존하지 않는다.
+> `test_tier_order.py` 가 3개 등급의 **모든 순열**에 대해 `max()` 를 검사한다.
+
+### 발견 8 — `extra={"name": ...}` 가 로그 한 줄로 요청을 죽인다
+
+`logging` 은 `extra` 의 키가 `LogRecord` 속성과 겹치면 `KeyError` 를 던진다.
+`name`, `module`, `args`, `msg`, `levelname` 이 전부 예약어다.
+
+`exaone.py` 의 재시도 경고에서 터졌고 `test_exaone.py` 가 잡았다.
+**실패 경로에서만 실행되는 로그**라 개발 중에는 발견되지 않는다.
+
+> **조치**: `config.log_extra()` 헬퍼(예약어에 `x_` 접두사) +
+> `tests/unit/test_log_extra_static.py` 의 ast 정적 검사.
+> 리뷰 매너가 아니라 CI 가 잡는다.
+
+### 발견 9 — 차단 목록과 가명화 목록을 섞으면 가명화 경로가 죽는다 🔴
+
+`banned.json` v1.0.0 에 사내 프로젝트명(`atlas-ml`)과 시스템명(`Nova 게이트웨이`)을
+넣었다. `banned.json` 자체의 주석이 "가명화 대상 목록과 다르다"고 명시했는데 위반했다.
+
+코퍼스 정합성 검사가 잡았다:
+
+| 문서 | 정답 | 차단 히트 | 규칙 예측 |
+|---|---|---|---|
+| `kim/docs/auth-design.md` | internal | 1 (`Nova 게이트웨이`) | **secret** ✗ |
+| `choi/docs/auth-review.md` | internal | 1 | **secret** ✗ |
+| `choi/docs/release-checklist.md` | internal | 1 | **secret** ✗ |
+| `park/scripts/preprocess_v3.py` | internal | 2 (`atlas-ml`, `atlas_ml`) | **secret** ✗ |
+| `park/runs/.../train.log` | internal | 1 | **secret** ✗ |
+
+결과: **정확도 6/11 = 55%** (목표 90%). 상향 오류라 유출은 없지만
+**시나리오 2의 가명화 경로가 아예 실행되지 않는다** — 모든 사내 문서가
+기밀로 처리되어 구조 추출로 가고, 답변이 무뎌진다.
+
+두 목록의 성격이 정반대다:
+
+| | 성격 | 대상 | 결과 |
+|---|---|---|---|
+| `banned.json` | **차단** | 고객사명 · 계약/요구사항 번호 · 금액 | SECRET 상향 + 전송 차단 |
+| `pseudonyms.json` | **치환** | 사내 프로젝트명 · 시스템명 · 인명 | 치환하고 경계를 넘게 허용 |
+
+> **조치 (설계 변경)**:
+> 1. `data/pseudonyms.json` 신설. `targets`(PROJ/SYS/PERSON/PATH 카테고리별) +
+>    `technical_terms`(절대 치환 금지 허용 목록)
+> 2. `schemas.PseudonymTargets` 추가. `all_literals()` 가 **긴 리터럴부터** 반환
+>    (`atlas-ml` vs `atlas-ml-core` 부분 치환 사고 방지)
+> 3. **`DataBundle._check_lists_are_disjoint()`** — 로드 시점에 두 목록의 겹침을
+>    `ConfigError` 로 거부한다. 재발 방지를 코드로 강제
+> 4. `test_pseudonym_and_banned_lists_are_disjoint` + `test_data_bundle_rejects_overlapping_lists`
+
+**분리 후 실측 (규칙 기반만, LLM 호출 0회)**
+
+```
+문서 11건 · 정확도 11/11 = 100%  (목표 >=90%)
+기밀 재현율 3/3 = 100%           (목표 100%)
+함정 문서 1/1 탐지               경로=internal, 헤더=없음, 금칙어 5건으로만 잡힘
+internal 문서 차단 히트 0건      가명화 경로 정상 작동 (치환 대상 1~5건)
+```
+
+> **Day 2 게이트 G2 는 규칙 기반만으로 달성 가능하다.** 계획(`u1` Step 9.8)의
+> 예상이 맞았다. EXAONE 보조 판정은 정확도를 위해서가 아니라
+> **규칙이 못 잡는 문맥적 기밀성**을 위해 추가한다.
+
+### 발견 10 — 실제 답변 지연 재확인
+
+§2 발견 4-b 참조. 시나리오 1 페이로드로 9.23s (460 in / 513 out).
+지연 예산을 수정했다.
+
+### 발견 11 — 초기 선정 의존성에 알려진 취약점 8건 (SECURITY-10)
+
+`make audit`(pip-audit)이 설계 시점에 고른 버전에서 취약점을 찾았다.
+
+| 패키지 | 초기 버전 | 취약점 | 수정 버전 |
+|---|---|---|---|
+| `starlette` | 0.41.3 (fastapi 0.115.6 이 끌어옴) | **7건** (PYSEC-2026-161, 248, 249, 1941, 1942, 2280, 2281) | ≥ 1.3.1 |
+| `pytest` | 8.3.4 | 1건 (PYSEC-2026-1845) | ≥ 9.0.3 |
+
+`starlette` 는 직접 의존이 아니라 `fastapi` 의 전이 의존이었다.
+설계 문서에서 `fastapi==0.115.6` 을 고정한 것이 원인이다 —
+**의존성 버전을 실제로 검사하지 않고 고른 결과다.**
+
+> **조치**: `pyproject.toml` 갱신 + `starlette` 를 **직접 고정**해
+> 전이 의존으로 내려가지 않게 했다.
+>
+> | 패키지 | 확정 버전 |
+> |---|---|
+> | `fastapi` | 0.141.1 |
+> | `starlette` | 1.6.0 (직접 고정) |
+> | `pydantic` | 2.13.4 |
+> | `uvicorn[standard]` | 0.52.4 |
+> | `boto3` | 1.43.74 |
+> | `pyyaml` | 6.0.3 |
+> | `pytest` | 9.1.1 |
+> | `pytest-asyncio` | 1.4.0 |
+> | `hypothesis` | 6.165.10 |
+> | `pip-audit` | 2.10.1 |
+> | `ruff` | 0.16.3 |
+>
+> 재검사: **취약점 0건.** 테스트 382개 전부 통과 (버전 상승 후에도).
+
+**교훈**: 설계 문서에 버전을 적을 때는 반드시 `pip-audit` 을 함께 돌린다.
+`make audit` 을 Day 1 부트스트랩에 넣은 것이 이걸 잡았다.
+버전을 추측으로 적으면 안 된다 — `hypothesis==6.143.4` 는 **존재하지 않는 버전**이었고
+`uv sync` 가 거부했다.
+
+---
+
+## 8. Day 1 종료 시점 상태
+
+| 항목 | 값 |
+|---|---|
+| 테스트 | **382개 통과** (unit) |
+| lint / format | 통과 |
+| 의존성 취약점 | **0건** |
+| `make preflight` | 실패 0 · 경고 2 (경계 시뮬레이션, CDK 미부트스트랩 — 둘 다 예상됨) |
+| 규칙 기반 분류 정확도 | **11/11 = 100%** (Day 2 게이트 G2 예비 통과) |
+| 기밀 재현율 | **3/3 = 100%** |
+| LLM 호출 (Day 1 전체) | EXAONE 3회 · Bedrock 3회 |
+
+### 실측 지연 (최종)
+
+| 호출 | 조건 | 지연 |
+|---|---|---|
+| EXAONE | ping, 4 토큰 출력 | **0.27s** |
+| EXAONE | 슬롯 채우기, 원문 235 토큰 | **0.42s** |
+| Bedrock | ping, 4 토큰 출력 | **2.30s** |
+| Bedrock | 시나리오 1 실제 답변, 513 토큰 출력 | **9.23s** |
+
+> **출력 토큰이 지연을 지배한다.** 4 토큰 응답으로 지연을 판단하면 안 된다 —
+> `preflight` 가 이 경고를 매번 출력한다.

@@ -1,0 +1,16 @@
+{
+  "entity_id": "person:kim",
+  "updated_at": "2026-08-19T14:31:20+09:00",
+  "focus": "고객사 H 인증 요구사항 검토 + SDK v3.2 토큰 정책",
+  "summary": "고객사 H의 인증 요구사항과 자사 SDK 토큰 갱신 정책의 정합성을 검토 중",
+  "open_paths": [
+    "corpus/customer-H/req-spec-2026H.md",
+    "corpus/kim/docs/auth-design.md",
+    "corpus/kim/notes/2025-11-auth.md"
+  ],
+  "recent_edits": [
+    { "path": "corpus/kim/docs/auth-design.md", "at": "2026-08-19T11:02:00+09:00" }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

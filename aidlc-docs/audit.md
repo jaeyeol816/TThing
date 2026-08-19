@@ -134,3 +134,48 @@
 **Context**: CONSTRUCTION Phase - PBT baseline enforcement across design stages
 
 ---
+## Code Generation Part 1 - Approval Received
+**Timestamp**: 2026-08-19T12:00:00Z
+**User Input**: "짚어야할 두가지에 대해서 말씀드리겠습니다:\n\n- EXAONE 이 friendli 라는 인터넷망에서 서빙되는 것을 알고 있습니다. 다만, 전제조건으로 현재 상황이 사내망이라고 가정하고 진행하도록 하려고 합니다 (어차피 지금은 데모고, 실제 서비스화 할 때 엔드포인트만 바꾸면 되는것이기 때문) \n- .gitignore 는 만들어주세요. \n- 자격 증명 만료는 해커톤 종료 때까지는 걱정 없는 것으로 알고 있습니다. 그리고 claude sonnet 5가 안된다면 4.5 를 이용해도 괜찮습니다\n\n \n\n이제 day 1 부분 까지 구현을 부탁드리겠습니다. 중간중간 테스트 및 검증하면서 진행해주시되, EXAONE 이든 Claude 이든 사용량을 너무 많이 쓰지는 말아주세요 (꼭 필요한 검증용으로 몇 번 이내로만 사용)"
+**AI Response**: Approval received with three clarifications: (1) trust boundary is simulated by premise and that is accepted, (2) create .gitignore, (3) STS credential expiry is not a concern during the hackathon and claude-sonnet-4-5 is acceptable. Proceeding with Day 1 implementation under a constraint of minimal LLM usage.
+**Context**: CONSTRUCTION Phase - approval gate passed, Code Generation Part 2 begins
+
+---
+
+## Code Generation Part 2 - Day 1 Complete
+**Timestamp**: 2026-08-19T15:30:00Z
+**User Input**: N/A (implementation)
+**AI Response**: Day 1 complete. 382 unit tests passing, lint and format clean, zero dependency vulnerabilities, preflight passing with 0 failures. Frozen contracts: schemas.py, data/vocab.json v1.0.0, gatekeeper.py signatures, api_models.py, config/agents.yaml, and 11 API fixtures generated from the actual pydantic models. Rule-based classification measured at 11/11 = 100% accuracy with 3/3 secret recall, which pre-satisfies the Day 2 gate G2 target. Total LLM usage held to 3 EXAONE calls and 3 Bedrock calls, all for verification.
+**Context**: CONSTRUCTION Phase - Code Generation Part 2 - Day 1
+
+---
+
+## Day 1 - Defects Found and Fixed
+**Timestamp**: 2026-08-19T15:31:00Z
+**User Input**: N/A (automated verification)
+**AI Response**: Four defects were found by tests written alongside the implementation, all recorded in aidlc-docs/construction/preflight-findings.md section 7.
+
+(1) Tier comparison fell back to alphabetical ordering. functools.total_ordering does not inject __gt__ into a StrEnum because str.__gt__ already exists and differs from object.__gt__. Since max() uses __gt__, max(Tier.INTERNAL, Tier.OPEN) returned OPEN. FR-11 expresses tier escalation as max(tiers), so an internal document would have been classified as open and its verbatim text would have crossed the boundary. No exception, no log entry — a silent leak. Fixed by defining all four comparison methods explicitly; test_tier_order.py now checks every permutation of the three tiers.
+
+(2) extra={"name": ...} collides with LogRecord.name and raises KeyError, meaning a single log line kills the request. It occurred in the exaone retry warning, a path that only executes on failure and would not surface during normal development. Fixed with a log_extra() helper that prefixes reserved keys, plus tests/unit/test_log_extra_static.py performing an ast scan of all source modules.
+
+(3) BLOCKING: banned.json v1.0.0 contained internal project and system names (atlas-ml, Nova gateway) even though the file's own comment stated that the blocking list must be distinct from the pseudonymization list. Consequence: all five internal documents classified as secret, dropping accuracy to 6/11 = 55% and preventing scenario 2's pseudonymization path from ever executing. Fixed by creating data/pseudonyms.json, adding schemas.PseudonymTargets, and adding DataBundle._check_lists_are_disjoint() which rejects overlap at load time with ConfigError so the defect cannot recur.
+
+(4) Initially selected dependency versions carried 8 known vulnerabilities: starlette 0.41.3 with 7 CVEs (pulled transitively by fastapi 0.115.6) and pytest 8.3.4 with 1. Root cause was pinning versions in the design document without running pip-audit. Fixed by raising versions and pinning starlette directly so it cannot regress via transitive resolution. Re-audit reports zero vulnerabilities and all 382 tests still pass.
+**Context**: CONSTRUCTION Phase - Day 1 verification findings
+
+---
+
+## Day 1 - Design Changes from Measurement
+**Timestamp**: 2026-08-19T15:32:00Z
+**User Input**: N/A
+**AI Response**: Three design documents were amended based on measurements taken during implementation.
+
+Latency budget corrected: the design's 2.17s figure for Bedrock was measured on a 4-token response. A real scenario 1 answer produces 513 output tokens and takes 9.23s — output tokens dominate latency. u3-agent-mesh/nfr-requirements/nfr-requirements.md P-03 revised from under 4s to under 12s and P-04 from under 5s to under 14s. Total remains approximately 18s against the 30s ceiling, leaving 12s of headroom, which reinforces the existing policy of not retrying timeouts. The preflight script now prints this warning on every run so nobody judges latency from a ping.
+
+EXAONE latency improved as a side effect of the security fix: enable_thinking=False reduced round trips from 0.78-0.96s to 0.27-0.42s because the model no longer generates reasoning tokens.
+
+Schema refinement: the role field was moved out of vocab.json slots and into a top-level entity_roles list, because role is a structural key of the payload whose permitted values come from the specific task_schema's entity_roles rather than from a global list. This is more precise — a 'goal' role appearing in constraint_conflict_check is now caught. Vocabulary.load() rejects any slot name that collides with STRUCTURAL_KEYS.
+**Context**: CONSTRUCTION Phase - Day 1 design amendments
+
+---

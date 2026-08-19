@@ -26,50 +26,50 @@
 
 **다른 어떤 작업보다 먼저.** 워크스페이스에 자격증명이 평문으로 있고 `.gitignore`가 없다.
 
-- [ ] 1.1 `.gitignore` 생성 (`shared-infrastructure.md` §1 내용 그대로)
-- [ ] 1.2 `git init` — **1.1 이후에만**
-- [ ] 1.3 `.env.example` 생성 (`u1/nfr-requirements/tech-stack-decisions.md` §8)
-- [ ] 1.4 `.python-version` = `3.12`
-- [ ] 1.5 `pyproject.toml` (`shared-infrastructure.md` §4)
-- [ ] 1.6 `uv sync` → `uv.lock` 생성 및 커밋
-- [ ] 1.7 `Makefile` (`shared-infrastructure.md` §3)
-- [ ] 1.8 `README.md` — 다른 컴퓨터 온보딩 절차(§12) + **해커톤 후 Friendli 키 폐기 안내**
-- [ ] 1.9 `.kiro/opencode.jsonc`의 Friendli 키를 `.env`의 `FRIENDLI_TOKEN`으로 이전
-- [ ] 1.10 검증: `git ls-files | grep -E '\.env|opencode'` 결과가 **비어 있음**
-- [ ] 1.11 첫 커밋
+- [x] 1.1 `.gitignore` 생성 (`shared-infrastructure.md` §1 내용 그대로)
+- [x] 1.2 `git init` — **1.1 이후에만**
+- [x] 1.3 `.env.example` 생성 (`u1/nfr-requirements/tech-stack-decisions.md` §8)
+- [x] 1.4 `.python-version` = `3.12`
+- [x] 1.5 `pyproject.toml` (`shared-infrastructure.md` §4)
+- [x] 1.6 `uv sync` → `uv.lock` 생성 및 커밋
+- [x] 1.7 `Makefile` (`shared-infrastructure.md` §3)
+- [x] 1.8 `README.md` — 다른 컴퓨터 온보딩 절차(§12) + **해커톤 후 Friendli 키 폐기 안내**
+- [x] 1.9 `.kiro/opencode.jsonc`의 Friendli 키를 `.env`의 `FRIENDLI_TOKEN`으로 이전
+- [x] 1.10 검증: `git ls-files | grep -E '\.env|opencode'` 결과가 **비어 있음**
+- [x] 1.11 첫 커밋
 
 **완료 기준**: 1.10이 비어 있다. 하나라도 나오면 되돌린다.
 
 ## Step 2 · `config.py`
 
-- [ ] 2.1 `Config` 프로즌 데이터클래스 + `load()` (`shared-infrastructure.md` §5)
-- [ ] 2.2 시작 시 검증 (fail fast 6개 조건)
-- [ ] 2.3 `safe_resolve()` — 경로 탈출 거부 (NFR-S-05)
-- [ ] 2.4 `agents.yaml` 로더
-- [ ] 2.5 `RedactingFilter` + JSON 구조화 로거 (§6)
-- [ ] 2.6 `correlation_id` contextvar
-- [ ] 2.7 예외 계층 (`exceptions.py` 또는 `config.py` 내, §7)
-- [ ] 2.8 `tests/unit/test_config.py` — 경로 탈출, fail fast, 로그 리댁션
+- [x] 2.1 `Config` 프로즌 데이터클래스 + `load()` (`shared-infrastructure.md` §5)
+- [x] 2.2 시작 시 검증 (fail fast 6개 조건)
+- [x] 2.3 `safe_resolve()` — 경로 탈출 거부 (NFR-S-05)
+- [x] 2.4 `agents.yaml` 로더
+- [x] 2.5 `RedactingFilter` + JSON 구조화 로거 (§6)
+- [x] 2.6 `correlation_id` contextvar
+- [x] 2.7 예외 계층 (`exceptions.py` 또는 `config.py` 내, §7)
+- [x] 2.8 `tests/unit/test_config.py` — 경로 탈출, fail fast, 로그 리댁션
 
 ## Step 3 · `schemas.py` + `vocab.json` ⚠️ 동결 대상
 
 C(U6)와 함께 작업한다. **완벽을 추구하지 말고 시나리오 3개가 돌 최소 슬롯으로 시작한다.**
 
-- [ ] 3.1 `Tier` StrEnum + **`__lt__` 구현** (`u1/domain-entities.md` §1)
-- [ ] 3.2 `tests/unit/test_tier_order.py` — **`max()`가 알파벳 순이 되지 않음을 확인** 🔴
-- [ ] 3.3 `Freshness`, `Disposition`, `Transport` 열거형
-- [ ] 3.4 `Chunk` (`display_title` / `internal_path` 분리)
-- [ ] 3.5 `SlotDef` — `kind`는 `enum`/`int`/`bool` **3개만** (자유 문자열 슬롯 없음)
-- [ ] 3.6 `TaskSchema` + `slot_names` / `required_slots` 프로퍼티
-- [ ] 3.7 `Vocabulary`, `BannedTerms`, `ClassificationRules` 로더
-- [ ] 3.8 `TierDecision`
-- [ ] 3.9 **`Mapping` dataclass + `__getstate__`/`__reduce__` → `TypeError`**
-- [ ] 3.10 `CheckResult`, `ValidationResult`, `PayloadEnvelope`, `PreviewCard`
-- [ ] 3.11 `Persona`, `AgentCall`, `AgentResponse`, `Citation`, `RehydratedAnswer`
-- [ ] 3.12 `AuditRecord` (`trusted_zone_llm_base_url` 포함), `LeakReport`
-- [ ] 3.13 `data/vocab.json` 작성 (`u6/domain-entities.md` §1) — **`_intentionally_absent` 포함**
-- [ ] 3.14 `tests/unit/test_mapping_not_serializable.py` — `json`/`pickle`/`deepcopy` 전부 `TypeError` 🔴
-- [ ] 3.15 `tests/unit/test_schemas.py` — 직렬화 왕복, `SlotDef` 검증
+- [x] 3.1 `Tier` StrEnum + **`__lt__` 구현** (`u1/domain-entities.md` §1)
+- [x] 3.2 `tests/unit/test_tier_order.py` — **`max()`가 알파벳 순이 되지 않음을 확인** 🔴
+- [x] 3.3 `Freshness`, `Disposition`, `Transport` 열거형
+- [x] 3.4 `Chunk` (`display_title` / `internal_path` 분리)
+- [x] 3.5 `SlotDef` — `kind`는 `enum`/`int`/`bool` **3개만** (자유 문자열 슬롯 없음)
+- [x] 3.6 `TaskSchema` + `slot_names` / `required_slots` 프로퍼티
+- [x] 3.7 `Vocabulary`, `BannedTerms`, `ClassificationRules` 로더
+- [x] 3.8 `TierDecision`
+- [x] 3.9 **`Mapping` dataclass + `__getstate__`/`__reduce__` → `TypeError`**
+- [x] 3.10 `CheckResult`, `ValidationResult`, `PayloadEnvelope`, `PreviewCard`
+- [x] 3.11 `Persona`, `AgentCall`, `AgentResponse`, `Citation`, `RehydratedAnswer`
+- [x] 3.12 `AuditRecord` (`trusted_zone_llm_base_url` 포함), `LeakReport`
+- [x] 3.13 `data/vocab.json` 작성 (`u6/domain-entities.md` §1) — **`_intentionally_absent` 포함**
+- [x] 3.14 `tests/unit/test_mapping_not_serializable.py` — `json`/`pickle`/`deepcopy` 전부 `TypeError` 🔴
+- [x] 3.15 `tests/unit/test_schemas.py` — 직렬화 왕복, `SlotDef` 검증
 
 **3.2가 가장 중요한 테스트다.** `Tier.__lt__`를 잊으면 `max()`가 `secret < open`으로 동작해 조용히 유출된다.
 
@@ -77,48 +77,48 @@ C(U6)와 함께 작업한다. **완벽을 추구하지 말고 시나리오 3개�
 
 B(U3)가 Day 3에 이 시그니처에 대고 코딩한다.
 
-- [ ] 4.1 `Gatekeeper` 클래스 + `__init__`
-- [ ] 4.2 7개 메서드 시그니처 (`component-methods.md`) — 본문은 `raise NotImplementedError`
-- [ ] 4.3 `EnvelopeCache` (`take()` 일회용 + TTL 5분 + `sweep()`)
-- [ ] 4.4 커밋 → **B에게 알림**
+- [x] 4.1 `Gatekeeper` 클래스 + `__init__`
+- [x] 4.2 7개 메서드 시그니처 (`component-methods.md`) — 본문은 `raise NotImplementedError`
+- [x] 4.3 `EnvelopeCache` (`take()` 일회용 + TTL 5분 + `sweep()`)
+- [x] 4.4 커밋 → **B에게 알림**
 
 ## Step 5 · `llm/exaone.py`
 
-- [ ] 5.1 `ExaoneClient` — httpx async, `temperature=0`
-- [ ] 5.2 **`chat_template_kwargs={"enable_thinking": False}` 고정** (FR-14)
-- [ ] 5.3 **`response_format={"type":"json_object"}`**
-- [ ] 5.4 **응답에서 `reasoning`/`reasoning_content` 삭제 — 파싱 전에** 🔴
-- [ ] 5.5 재시도 2회 (파싱 실패만. **타임아웃은 재시도하지 않는다**)
-- [ ] 5.6 `complete_text()` — 폴백 답변용
-- [ ] 5.7 목업 모드 (`data/fixtures/exaone/`) + `FixtureMissing` 명시적 실패
-- [ ] 5.8 `MESH_RECORD_FIXTURES=1` 녹화
-- [ ] 5.9 `tests/unit/test_exaone.py` — `reasoning*` 삭제, 재시도, 타임아웃 미재시도
+- [x] 5.1 `ExaoneClient` — httpx async, `temperature=0`
+- [x] 5.2 **`chat_template_kwargs={"enable_thinking": False}` 고정** (FR-14)
+- [x] 5.3 **`response_format={"type":"json_object"}`**
+- [x] 5.4 **응답에서 `reasoning`/`reasoning_content` 삭제 — 파싱 전에** 🔴
+- [x] 5.5 재시도 2회 (파싱 실패만. **타임아웃은 재시도하지 않는다**)
+- [x] 5.6 `complete_text()` — 폴백 답변용
+- [x] 5.7 목업 모드 (`data/fixtures/exaone/`) + `FixtureMissing` 명시적 실패
+- [x] 5.8 `MESH_RECORD_FIXTURES=1` 녹화
+- [x] 5.9 `tests/unit/test_exaone.py` — `reasoning*` 삭제, 재시도, 타임아웃 미재시도
 
 ## Step 6 · `llm/broker.py`
 
-- [ ] 6.1 `BrokerClient` + `Transport` 분기
-- [ ] 6.2 `broker` 모드 — httpx + `x-api-key`, **`revalidated != True`면 `BrokerError`**
-- [ ] 6.3 `direct` 모드 — boto3 `Converse`, `revalidated=True` 설정
-- [ ] 6.4 `mock` 모드 — 픽스처 재생
-- [ ] 6.5 `vocab_sha256` 비교 → 불일치 시 경고 (차단 안 함)
-- [ ] 6.6 `tests/unit/test_broker.py` — 3개 모드, `revalidated` 부재 시 fail closed
+- [x] 6.1 `BrokerClient` + `Transport` 분기
+- [x] 6.2 `broker` 모드 — httpx + `x-api-key`, **`revalidated != True`면 `BrokerError`**
+- [x] 6.3 `direct` 모드 — boto3 `Converse`, `revalidated=True` 설정
+- [x] 6.4 `mock` 모드 — 픽스처 재생
+- [x] 6.5 `vocab_sha256` 비교 → 불일치 시 경고 (차단 안 함)
+- [x] 6.6 `tests/unit/test_broker.py` — 3개 모드, `revalidated` 부재 시 fail closed
 
 ## Step 7 · `scripts/preflight.py`
 
-- [ ] 7.1 13개 확인 항목 (`u1/nfr-design/logical-components.md` §9)
-- [ ] 7.2 `[OK]/[WARN]/[FAIL]` + 조치 방법 출력
-- [ ] 7.3 **`trusted_zone_llm_base_url`이 공개 SaaS면 경계 시뮬레이션 경고** 🔴
-- [ ] 7.4 `.gitignore` 커버리지 검사 (FAIL blocking)
-- [ ] 7.5 STS 임시 자격증명 경고
-- [ ] 7.6 하나라도 FAIL이면 non-zero 종료
-- [ ] 7.7 `make preflight` 실행 확인
+- [x] 7.1 13개 확인 항목 (`u1/nfr-design/logical-components.md` §9)
+- [x] 7.2 `[OK]/[WARN]/[FAIL]` + 조치 방법 출력
+- [x] 7.3 **`trusted_zone_llm_base_url`이 공개 SaaS면 경계 시뮬레이션 경고** 🔴
+- [x] 7.4 `.gitignore` 커버리지 검사 (FAIL blocking)
+- [x] 7.5 STS 임시 자격증명 경고
+- [x] 7.6 하나라도 FAIL이면 non-zero 종료
+- [x] 7.7 `make preflight` 실행 확인
 
 ## Step 8 · Day 1 동결 커밋 🔴
 
-- [ ] 8.1 `schemas.py` + `vocab.json` + `gatekeeper.py` 스텁 + `config.py` 커밋
-- [ ] 8.2 `schemas.py` 상단에 CHANGELOG 주석 블록 추가
-- [ ] 8.3 **팀에 동결 통보** — 이후 변경은 3인 합의로만 (NFR-M-02)
-- [ ] 8.4 B에게 API 계약 8개 확인 요청, C에게 `data/fixtures/api/` 요청
+- [x] 8.1 `schemas.py` + `vocab.json` + `gatekeeper.py` 스텁 + `config.py` 커밋
+- [x] 8.2 `schemas.py` 상단에 CHANGELOG 주석 블록 추가
+- [x] 8.3 **팀에 동결 통보** — 이후 변경은 3인 합의로만 (NFR-M-02)
+- [x] 8.4 B에게 API 계약 8개 확인 요청, C에게 `data/fixtures/api/` 요청
 
 ---
 
@@ -226,11 +226,11 @@ B(U3)가 Day 3에 이 시그니처에 대고 코딩한다.
 
 ## Step 17 · 경계 강제 테스트 🔴
 
-- [ ] 17.1 `tests/unit/test_import_boundary.py` — `ast` 기반, 3개 규칙 (`shared-infrastructure.md` §10)
-- [ ] 17.2 경계 밖 클라이언트 import 검사
-- [ ] 17.3 `Chunk` 전파 경계 검사
-- [ ] 17.4 `Mapping` 전파 경계 검사
-- [ ] 17.5 `make test`에 포함 확인
+- [x] 17.1 `tests/unit/test_import_boundary.py` — `ast` 기반, 3개 규칙 (`shared-infrastructure.md` §10)
+- [x] 17.2 경계 밖 클라이언트 import 검사
+- [x] 17.3 `Chunk` 전파 경계 검사
+- [x] 17.4 `Mapping` 전파 경계 검사
+- [x] 17.5 `make test`에 포함 확인
 
 ## Step 18 · Day 2 게이트 G2 🔴
 

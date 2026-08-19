@@ -1,0 +1,153 @@
+{
+  "request_id": "req_01JS2",
+  "calls": [
+    {
+      "envelope_id": "env_BBBBBBBBBBBBBBBBBBBBBB",
+      "target_entity_id": "person:park",
+      "agent_label": "박선영 선임의 Agent",
+      "sub_question": {
+        "id": "q1",
+        "kind": "technique",
+        "text": "전처리 v3의 라벨 불균형 처리 방식",
+        "tier": "internal"
+      },
+      "tier": "internal",
+      "disposition": "ready",
+      "preview": {
+        "envelope_id": "env_AAAAAAAAAAAAAAAAAAAAAA",
+        "tier": "internal",
+        "representation": "pseudonymized",
+        "payload_pretty": "{\n  \"task\": \"technique_lookup\",\n  \"domain\": \"data_pipeline\",\n  \"entities\": [\n    {\n      \"ref\": \"COMP_A\",\n      \"role\": \"our_component\",\n      \"facts\": {\n        \"sampling_strategy_class\": \"hybrid\"\n      }\n    }\n  ],\n  \"question_template\": \"technique_explanation\"\n}",
+        "size_bytes": 265,
+        "validation_summary": "6/6",
+        "checks": [
+          {
+            "stage": "schema",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "vocab",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "range",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "banned",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "ngram",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "size",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          }
+        ],
+        "excluded_categories": [
+          "고객사명",
+          "제품명",
+          "버전",
+          "요구사항 번호",
+          "원문 문장",
+          "담당자",
+          "일정",
+          "금액"
+        ],
+        "verbatim_sentence_count": 0
+      },
+      "fallback": null,
+      "blocked_reason": null
+    },
+    {
+      "envelope_id": "env_CCCCCCCCCCCCCCCCCCCCCC",
+      "target_entity_id": "person:park",
+      "agent_label": "박선영 선임의 Agent",
+      "sub_question": {
+        "id": "q2",
+        "kind": "current_state_and_permission",
+        "text": "지금 그 스크립트를 실행해도 되는가",
+        "tier": "internal"
+      },
+      "tier": "internal",
+      "disposition": "ready",
+      "preview": {
+        "envelope_id": "env_AAAAAAAAAAAAAAAAAAAAAA",
+        "tier": "internal",
+        "representation": "pseudonymized",
+        "payload_pretty": "{\n  \"task\": \"technique_lookup\",\n  \"domain\": \"data_pipeline\",\n  \"entities\": [\n    {\n      \"ref\": \"COMP_A\",\n      \"role\": \"our_component\",\n      \"facts\": {\n        \"resource_contention\": \"gpu_busy\"\n      }\n    }\n  ],\n  \"question_template\": \"technique_explanation\"\n}",
+        "size_bytes": 263,
+        "validation_summary": "6/6",
+        "checks": [
+          {
+            "stage": "schema",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "vocab",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "range",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "banned",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "ngram",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "size",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          }
+        ],
+        "excluded_categories": [
+          "고객사명",
+          "제품명",
+          "버전",
+          "요구사항 번호",
+          "원문 문장",
+          "담당자",
+          "일정",
+          "금액"
+        ],
+        "verbatim_sentence_count": 0
+      },
+      "fallback": null,
+      "blocked_reason": null
+    }
+  ],
+  "decomposed": true,
+  "upgraded_tier": null,
+  "upgrade_reason": null,
+  "agents_notified": false
+}

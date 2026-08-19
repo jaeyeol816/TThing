@@ -69,6 +69,9 @@ demo:                     ## CLI 3막 재생 (화면 없이도 시연 가능)
 record-fixtures:          ## live 로 3막 실행하며 목업 픽스처 녹화
 	MESH_RECORD_FIXTURES=1 $(PY) python scripts/demo.py
 
+api-fixtures:             ## U4 화면 선행 개발용 API 목업 재생성 (실제 모델 기반)
+	$(PY) python scripts/gen_api_fixtures.py
+
 clean:
 	rm -rf .pytest_cache .ruff_cache .hypothesis
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

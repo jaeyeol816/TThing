@@ -6,22 +6,26 @@ requires-python = ">=3.12,<3.13"
 
 # 의존성 6개 유지가 설계 목표다 (NFR-M-01).
 # 하나 추가할 때마다 다른 컴퓨터에서의 실패 확률이 올라간다.
+# 버전은 `make audit` (pip-audit) 결과에 따라 고정한다 (SECURITY-10).
+# 초기 선정값(fastapi 0.115.6)은 starlette 0.41.3 을 끌어와 취약점 7건이 나왔다.
+# 아래 조합은 취약점 0건으로 확인됨.
 dependencies = [
-    "fastapi==0.115.6",
-    "uvicorn[standard]==0.34.0",
-    "pydantic==2.10.4",
+    "fastapi==0.141.1",        # starlette 1.6.0 을 끌어온다 (0.41.3 은 CVE 7건)
+    "starlette==1.6.0",        # 명시 고정 — 전이 의존으로 내려가지 않게
+    "uvicorn[standard]==0.52.4",
+    "pydantic==2.13.4",
     "httpx==0.28.1",
-    "boto3==1.35.90",          # 1.35.x 이상 필수 — 구버전은 bedrock 서비스를 모른다 (실측)
-    "pyyaml==6.0.2",
+    "boto3==1.43.74",          # 1.35 이상 필수 — 구버전은 bedrock 서비스를 모른다 (실측)
+    "pyyaml==6.0.3",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest==8.3.4",
-    "pytest-asyncio==0.25.0",
-    "hypothesis==6.123.2",
-    "pip-audit==2.7.3",
-    "ruff==0.8.6",
+    "pytest==9.1.1",           # 8.3.4 는 PYSEC-2026-1845
+    "pytest-asyncio==1.4.0",
+    "hypothesis==6.165.10",
+    "pip-audit==2.10.1",
+    "ruff==0.16.3",
 ]
 
 [build-system]
@@ -33,6 +37,7 @@ packages = ["src/mesh"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 pythonpath = ["src"]
 testpaths = ["tests"]
 filterwarnings = ["error::DeprecationWarning"]

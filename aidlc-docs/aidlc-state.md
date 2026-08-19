@@ -79,14 +79,23 @@
 
 | Gate | When | Criteria | Status |
 |---|---|---|:---:|
-| **SG1** | Day 1 첫 커밋 전 | `.gitignore`가 자격증명 3종 커버 🔴 | [ ] |
-| **G1** | Day 1 종료 | `schemas.py` + `vocab.json` 동결 | [ ] |
-| **G2** | Day 2 종료 | **기밀 재현율 100%**, 정확도 ≥90% 🔴 | [ ] |
+| **SG1** | Day 1 첫 커밋 전 | `.gitignore`가 자격증명 3종 커버 🔴 | **[x]** 커밋 c91c1b8 검증 |
+| **G1** | Day 1 종료 | `schemas.py` + `vocab.json` 동결 | **[x]** 계약 6종 동결 |
+| **G2** | Day 2 종료 | **기밀 재현율 100%**, 정확도 ≥90% 🔴 | **[~]** 규칙만으로 11/11=100% 예비 통과. `make eval-classify` 미구현 |
 | **G3** | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 | [ ] |
 | **SG2~4** | U5 배포 전 | 브로커 인증·최소권한·감사 무결성 | [ ] |
 | **G4** | Day 5 | **유출 0건** (자동 + 육안 전수) 🔴 | [ ] |
 | **G5** | Day 5 | 목업 모드로 3막 전체 통과 | [ ] |
-| **SG5** | Day 5 | 로그·감사에 원문·토큰·`reasoning*` 부재 | [ ] |
+| **SG5** | Day 5 | 로그·감사에 원문·토큰·`reasoning*` 부재 | **[~]** `RedactingFilter` + `strip_thinking` 구현·검증. 감사 로그는 Day 2 |
+
+**추가 게이트 (Day 1 에 신설)**
+
+| Gate | Criteria | Status |
+|---|---|:---:|
+| SG6 | 의존성 취약점 0건 (`make audit`) | **[x]** 8건 발견 → 0건 |
+| SG7 | import 경계 3개 규칙 (ast 검사) | **[x]** |
+| SG8 | `logging` 예약어 충돌 0건 (ast 검사) | **[x]** |
+| SG9 | 차단 목록 ∩ 가명화 목록 = ∅ (로드 시점 강제) | **[x]** |
 
 **G2를 통과하지 못하면 Day 3으로 넘어가지 않는다** (설계 §7.2).
 
@@ -109,10 +118,45 @@
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: Code Generation Part 1 (Planning) Complete — 6개 유닛 전부
-- **Next Stage**: Code Generation Part 2 (Generation) — U1 Step 1부터
-- **Status**: **Awaiting approval to begin implementation**
-- **First Action on Approval**: U1 Step 1 (`.gitignore` → `git init`) 🔴
+- **Current Stage**: Code Generation Part 2 — **Day 1 완료**
+- **Next Stage**: Day 2 (U1 Step 9~18) — 등급 판정 · 검증기 · 추출기 · 게이트 G2
+- **Status**: Day 1 동결 완료. Day 2 착수 가능
+
+### Day 1 완료 내역 (2026-08-19)
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **382개 통과** |
+| lint / format | 통과 |
+| 의존성 취약점 | **0건** (초기 선정값에서 8건 발견 → 버전 상향) |
+| `make preflight` | 실패 0 · 경고 2 (경계 시뮬레이션, CDK 미부트스트랩 — 예상됨) |
+| 규칙 기반 분류 정확도 | **11/11 = 100%** (G2 예비 통과) |
+| 기밀 재현율 | **3/3 = 100%** · 함정 문서 1/1 탐지 |
+| LLM 호출 | EXAONE 3회 · Bedrock 3회 (검증 목적만) |
+
+**동결된 계약** (변경은 3인 합의로만, NFR-M-02)
+- `src/mesh/schemas.py` — 타입 계약
+- `data/vocab.json` — 어휘 사전 v1.0.0 (슬롯 8개, task 3개)
+- `src/mesh/gatekeeper.py` — 7개 메서드 시그니처 (`test_gatekeeper_contract.py` 가 강제)
+- `src/mesh/api_models.py` — HTTP API 계약 8개
+- `config/agents.yaml` — 에이전트 3개
+- `data/fixtures/api/*.json` — 11개 (실제 모델로 생성, 역파싱 검증됨)
+
+**Day 1 에 발견·수정한 결함 4건** (`preflight-findings.md` §7)
+1. `Tier` 비교가 알파벳 순 → `max(INTERNAL, OPEN) == OPEN` 조용한 유출. 4개 비교 메서드 명시
+2. `extra={"name":...}` 가 `LogRecord.name` 과 충돌 → 로그 한 줄이 요청을 죽인다. `log_extra()` + ast 정적 검사
+3. 🔴 차단 목록과 가명화 목록을 섞어 정확도 55% → `pseudonyms.json` 분리 + 로드 시점 겹침 거부
+4. 의존성 취약점 8건 → 버전 상향 + `starlette` 직접 고정
+
+**Day 2 에 남은 것** (U1 Step 9~18, 소유 A)
+- `classifier.py` 규칙 판정 → EXAONE 보조
+- `validator.py` 6단계 (순수 함수)
+- `extractor.py` 슬롯 채우기 + 화이트리스트 조립
+- `pseudonymizer.py` / `rehydrator.py`
+- `audit.py` SQLite + 원문 검색
+- `gatekeeper.py` 구현 채우기
+- PBT (`tests/generators.py`, PB-1~PB-10)
+- **게이트 G2**: `make eval-classify` 기밀 재현율 100%
 
 ## Open Items for User
 

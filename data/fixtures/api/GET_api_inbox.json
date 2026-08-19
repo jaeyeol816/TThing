@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "item_id": "itm_01JS2B1",
+      "at": "2026-08-19T14:34:10+09:00",
+      "owner_entity_id": "person:park",
+      "asker": "person:jung",
+      "thread_id": "req_01JS2",
+      "question_summary": "preprocess_v3 스크립트를 지금 실행해도 되는지",
+      "draft": {
+        "summary": "preprocess_v3 스크립트를 지금 실행해도 되는지",
+        "situation": [
+          "현재 train.py 실행 중 (14:02~, 약 3h 남음, cuda:0)",
+          "스크립트는 오늘 13:47에 수정됨",
+          "기법 질문(라벨 불균형)은 Agent가 이미 답변함"
+        ],
+        "draft_answer": "지금은 GPU를 점유 중이라 17:10 이후에 실행해 주세요. 급하면 configs/v3.yaml을 복사해서 다른 GPU로 돌리셔도 됩니다.",
+        "already_answered": [
+          "q1 전처리 v3의 라벨 불균형 처리 방식"
+        ]
+      },
+      "citations": [
+        {
+          "ref": "SESSION_A",
+          "display_title": "세션 (실시간)",
+          "section": null,
+          "tier": "internal",
+          "as_of": "2026-08-19",
+          "formality": "official"
+        }
+      ],
+      "tier": "internal",
+      "status": "open",
+      "resolved_at": null,
+      "resolution_text": null,
+      "redirect_to": null
+    }
+  ]
+}

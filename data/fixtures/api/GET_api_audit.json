@@ -1,0 +1,53 @@
+{
+  "query": null,
+  "rows": [
+    {
+      "record_id": "aud_01JS1A",
+      "at": "2026-08-19T14:33:41+09:00",
+      "actor": "person:choi",
+      "target_entity_id": "person:kim",
+      "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "transport": "broker",
+      "trusted_zone_llm_base_url": "https://api.friendli.ai/dedicated/v1",
+      "tier": "secret",
+      "representation": "structured",
+      "payload": {
+        "task": "constraint_conflict_check",
+        "domain": "authentication",
+        "entities": [
+          {
+            "ref": "REQ_A",
+            "role": "external_requirement",
+            "facts": {
+              "auth_mechanism_class": "challenge_response",
+              "session_binding": "required",
+              "credential_reuse_allowed": false,
+              "max_session_hours": 8
+            }
+          },
+          {
+            "ref": "COMP_B",
+            "role": "our_component",
+            "facts": {
+              "credential_lifetime_hours": 24,
+              "renewal_mode": "background_silent",
+              "session_binding": "none"
+            }
+          }
+        ],
+        "question_template": "conflict_and_mitigation",
+        "answer_format": {
+          "conflict": "bool",
+          "reason": "string",
+          "mitigations": "string[]"
+        }
+      },
+      "payload_sha256": "9f2a8c0000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 1124,
+      "validation_summary": "6/6",
+      "approved_by": "person:choi",
+      "envelope_id": "env_AAAAAAAAAAAAAAAAAAAAAA"
+    }
+  ],
+  "total_records": 1
+}

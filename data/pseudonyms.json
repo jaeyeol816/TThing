@@ -1,0 +1,102 @@
+{
+  "version": "1.0.0",
+  "_README": [
+    "**치환** 목록이다. 사내(INTERNAL) 등급에서 식별자만 placeholder 로 바꾼다.",
+    "",
+    "banned.json 과 정반대 성격이다:",
+    "  banned.json    걸리면 SECRET 상향 + 전송 차단   (고객사명·계약번호·금액)",
+    "  pseudonyms.json 치환하고 경계를 넘게 허용        (사내 프로젝트명·시스템명·인명)",
+    "",
+    "사내 문서는 기술 용어가 남아도 괜찮지만 기밀 문서는 기술 내용 자체가",
+    "비밀이라 가명화로는 부족하다. 그래서 기밀은 구조 추출로 간다 (설계 §3.7).",
+    "",
+    "⚠️ technical_terms 는 **절대 치환하지 않는다.**",
+    "   치환하면 답변 품질이 무너진다 — <TERM_1> 이 오버샘플링인지",
+    "   Claude 가 알 수 없다 (BR-P-01).",
+    "",
+    "placeholder 는 한 질의 안에서 일관되어야 한다 (같은 대상 = 같은 번호).",
+    "일관성이 깨지면 Claude 가 관계를 추론하지 못한다 (BR-P-02)."
+  ],
+
+  "targets": {
+    "PROJ": {
+      "description": "사내 프로젝트·패키지명",
+      "literals": ["atlas-ml", "atlas_ml", "AtlasML", "atlas-auth", "sdk-core"]
+    },
+    "SYS": {
+      "description": "사내 시스템·게이트웨이명",
+      "literals": ["Nova 게이트웨이", "Nova Gateway", "NovaGW", "레거시 SSO 게이트웨이"]
+    },
+    "PERSON": {
+      "description": "인명. 담당자 이름은 사내 등급에서도 치환한다",
+      "literals": ["김철수", "박선영", "최민수", "정연구원", "한지원", "이과장"]
+    },
+    "PATH": {
+      "description": "사내 저장소 경로 세그먼트",
+      "literals": ["data/raw/session_logs", "data/preproc_v3", "runs/2026-08-19"]
+    }
+  },
+
+  "technical_terms": [
+    "RandomOverSampler",
+    "GroupMedianImputer",
+    "balanced_subsample",
+    "sampling_strategy",
+    "random_state",
+    "class_weight",
+    "gradient_boosting",
+    "early_stopping_rounds",
+    "quantile_bucket",
+
+    "EAP",
+    "SSO",
+    "OAuth",
+    "OIDC",
+    "SAML",
+    "JWT",
+    "RS256",
+    "mTLS",
+    "TLS",
+    "WebAuthn",
+    "CHAP",
+    "SCRAM",
+    "PSK",
+
+    "session binding",
+    "세션 바인딩",
+    "claim mapping",
+    "클레임 매핑",
+    "access token",
+    "refresh token",
+    "revocation",
+    "무효화",
+    "challenge-response",
+    "background renewal",
+    "무음 갱신",
+
+    "p50",
+    "p95",
+    "p99",
+    "TPS",
+    "AUC",
+    "recall",
+    "cuda",
+    "GPU",
+    "parquet",
+    "Redis",
+    "3GPP",
+    "RFC"
+  ],
+
+  "_technical_terms_note": [
+    "이 목록은 **명시적 허용 목록**이다 (frozenset).",
+    "목록에 없는 대문자 고유명사는 치환하는 쪽으로 기울인다 —",
+    "애매하면 더 안전한 쪽 (BR-P-01).",
+    "",
+    "치환하면 답변이 무너지는 예:",
+    "  원문   RandomOverSampler(sampling_strategy=0.5) 로 소수 클래스를 오버샘플링",
+    "  나쁜 예 <TERM_1>(<TERM_2>=0.5) 로 <TERM_3> 를 <TERM_4>",
+    "  좋은 예 RandomOverSampler(sampling_strategy=0.5) 로 소수 클래스를 오버샘플링",
+    "         (프로젝트명만 <PROJ_1> 로 치환)"
+  ]
+}

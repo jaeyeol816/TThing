@@ -1,0 +1,20 @@
+{
+  "exaone_mode": "mock",
+  "agent_transport": "mock",
+  "trusted_zone_llm_base_url": "https://api.friendli.ai/dedicated/v1",
+  "trust_boundary_simulated": true,
+  "agent_model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "draft_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "vocab_version": "1.0.0",
+  "vocab_sha256": "a3f1000000000000000000000000000000000000000000000000000000000000",
+  "vocab_drift": false,
+  "mirror_backlog": 0,
+  "demo_now_override": "2026-08-19T14:35:00+09:00",
+  "envelope_cache_size": 0,
+  "disposition_counts": {
+    "auto": 14,
+    "unverified": 5,
+    "escalate": 4,
+    "blocked": 1
+  }
+}

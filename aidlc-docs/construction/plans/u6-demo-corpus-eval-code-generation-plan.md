@@ -24,23 +24,23 @@
 
 A(U1)와 함께 작업한다. **완벽을 추구하지 말고 시나리오 3개가 돌 최소 슬롯으로 시작한다.**
 
-- [ ] 1.1 슬롯 9개 정의 (`u6/domain-entities.md` §1)
-- [ ] 1.2 **`kind`는 `enum`/`int`/`bool` 3개만. 자유 문자열 슬롯 금지** 🔴
-- [ ] 1.3 `tasks` 3개, `domains` 3개, `question_templates` 3개
-- [ ] 1.4 `task_schemas` 3개 (`constraint_conflict_check`, `technique_lookup`, `rationale_lookup`)
-- [ ] 1.5 **`_intentionally_absent` 작성** 🔴 — 성능 수치·금액·계약번호·인명·고객사명
-- [ ] 1.6 **성능 수치 슬롯(`p99_latency_ms`, `throughput_tps`)을 넣지 않는다** 🔴 (FR-54)
-- [ ] 1.7 A와 스키마 정합 확인 → **동결**
+- [x] 1.1 슬롯 9개 정의 (`u6/domain-entities.md` §1)
+- [x] 1.2 **`kind`는 `enum`/`int`/`bool` 3개만. 자유 문자열 슬롯 금지** 🔴
+- [x] 1.3 `tasks` 3개, `domains` 3개, `question_templates` 3개
+- [x] 1.4 `task_schemas` 3개 (`constraint_conflict_check`, `technique_lookup`, `rationale_lookup`)
+- [x] 1.5 **`_intentionally_absent` 작성** 🔴 — 성능 수치·금액·계약번호·인명·고객사명
+- [x] 1.6 **성능 수치 슬롯(`p99_latency_ms`, `throughput_tps`)을 넣지 않는다** 🔴 (FR-54)
+- [x] 1.7 A와 스키마 정합 확인 → **동결**
 
 **1.6이 시나리오 3의 폴백을 만든다.** 슬롯을 추가하고 싶은 유혹이 생기면 `_intentionally_absent`를 읽는다.
 
 ## Step 2 · `data/banned.json`
 
-- [ ] 2.1 `literals` — 고객사명·시스템명·프로젝트명 (`H社`, `HanaTel`, `Nova 게이트웨이`, `atlas-ml`, ...)
-- [ ] 2.2 `patterns` — `REQ-\d{4}`, `CTR-\d{6}`, `SKU-...`
-- [ ] 2.3 **금액 패턴 여러 개** 🔴 — `\d+\s*억\s*원?`, `\d{1,3}(,\d{3})+\s*원`, `USD\s*[\d,]+`, `\$\s?[\d,]{4,}`
-- [ ] 2.4 한국어 금액 표기 변형 허용 (공백 포함)
-- [ ] 2.5 `_notes` — 이 목록이 검증 4단계와 등급 판정 규칙 3·4번에 둘 다 쓰인다
+- [x] 2.1 `literals` — 고객사명·시스템명·프로젝트명 (`H社`, `HanaTel`, `Nova 게이트웨이`, `atlas-ml`, ...)
+- [x] 2.2 `patterns` — `REQ-\d{4}`, `CTR-\d{6}`, `SKU-...`
+- [x] 2.3 **금액 패턴 여러 개** 🔴 — `\d+\s*억\s*원?`, `\d{1,3}(,\d{3})+\s*원`, `USD\s*[\d,]+`, `\$\s?[\d,]{4,}`
+- [x] 2.4 한국어 금액 표기 변형 허용 (공백 포함)
+- [x] 2.5 `_notes` — 이 목록이 검증 4단계와 등급 판정 규칙 3·4번에 둘 다 쓰인다
 
 **2.3이 함정 문서 탐지의 유일한 수단이다** (BR-C-04, BR-D-03).
 
@@ -48,32 +48,32 @@ A(U1)와 함께 작업한다. **완벽을 추구하지 말고 시나리오 3개�
 
 **규모보다 먼저.** 시간이 부족해도 시나리오는 돌아야 한다.
 
-- [ ] 3.1 `corpus/customer-H/req-spec-2026H.md` (**기밀**) — REQ-4412, EAP-AKA, 세션 8시간
-- [ ] 3.2 `corpus/kim/docs/auth-design.md` (사내) — SDK v3.2 토큰 24시간, 무음 갱신, 바인딩 없음
-- [ ] 3.3 `corpus/park/scripts/preprocess_v3.py` (사내) — `atlas_ml` + `RandomOverSampler(0.5)` + `balanced_subsample`
-- [ ] 3.4 `corpus/park/configs/v3.yaml` (사내)
-- [ ] 3.5 `corpus/park/runs/2026-08-19/train.log` (사내) — 실행 중 로그
-- [ ] 3.6 `corpus/kim/notes/2025-11-auth.md` (**비공식**) — 성능 이유. 벤치마크 문서 언급
-- [ ] 3.7 `corpus/choi/docs/auth-review.md` (**공식**) — 레거시 SSO 호환 이유
-- [ ] 3.8 `corpus/customer-H/benchmark-prod-2025-11.md` (**기밀**) — p99 840ms, 3120 TPS
-- [ ] 3.9 프런트매터 5개 필드 전부 (BR-D-07)
-- [ ] 3.10 **3.6과 3.7을 함께 작성 — 둘 다 사실이게** 🔴 (BR-D-02)
-- [ ] 3.11 3.3에 가명화 대상(`atlas_ml`)과 기술 용어를 **한 줄에 섞는다** (BR-P-01 검증용)
+- [x] 3.1 `corpus/customer-H/req-spec-2026H.md` (**기밀**) — REQ-4412, EAP-AKA, 세션 8시간
+- [x] 3.2 `corpus/kim/docs/auth-design.md` (사내) — SDK v3.2 토큰 24시간, 무음 갱신, 바인딩 없음
+- [x] 3.3 `corpus/park/scripts/preprocess_v3.py` (사내) — `atlas_ml` + `RandomOverSampler(0.5)` + `balanced_subsample`
+- [x] 3.4 `corpus/park/configs/v3.yaml` (사내)
+- [x] 3.5 `corpus/park/runs/2026-08-19/train.log` (사내) — 실행 중 로그
+- [x] 3.6 `corpus/kim/notes/2025-11-auth.md` (**비공식**) — 성능 이유. 벤치마크 문서 언급
+- [x] 3.7 `corpus/choi/docs/auth-review.md` (**공식**) — 레거시 SSO 호환 이유
+- [x] 3.8 `corpus/customer-H/benchmark-prod-2025-11.md` (**기밀**) — p99 840ms, 3120 TPS
+- [x] 3.9 프런트매터 5개 필드 전부 (BR-D-07)
+- [x] 3.10 **3.6과 3.7을 함께 작성 — 둘 다 사실이게** 🔴 (BR-D-02)
+- [x] 3.11 3.3에 가명화 대상(`atlas_ml`)과 기술 용어를 **한 줄에 섞는다** (BR-P-01 검증용)
 
 ## Step 4 · `data/fixtures/api/` — U4 선행 개발용
 
 U3의 API 계약(Step 0)이 확정되면 즉시 작성한다.
 
-- [ ] 4.1 `GET_api_agents.json` — 에이전트 3개
-- [ ] 4.2 `GET_api_health.json` — `trust_boundary_simulated: true`
-- [ ] 4.3 `POST_api_ask_prepare_ready.json` — 시나리오 1 (기밀, 검증 6/6)
-- [ ] 4.4 `POST_api_ask_prepare_blocked.json` — 시나리오 3 후속 (검증 실패 + 폴백)
-- [ ] 4.5 `POST_api_ask_send_auto.json` — 시나리오 1 자동 응답
-- [ ] 4.6 `POST_api_ask_send_divergent.json` — 시나리오 3 병기
-- [ ] 4.7 `POST_api_ask_send_escalate.json` — 시나리오 2 q2
-- [ ] 4.8 `GET_api_inbox.json` — 시나리오 2 인박스 (초안 3요소)
-- [ ] 4.9 `GET_api_audit.json`, `GET_api_audit_zero.json`
-- [ ] 4.10 **C 자신이 U4에서 소비한다** — 형태가 실제 응답과 다르면 Day 4에 UI를 다시 만든다
+- [x] 4.1 `GET_api_agents.json` — 에이전트 3개
+- [x] 4.2 `GET_api_health.json` — `trust_boundary_simulated: true`
+- [x] 4.3 `POST_api_ask_prepare_ready.json` — 시나리오 1 (기밀, 검증 6/6)
+- [x] 4.4 `POST_api_ask_prepare_blocked.json` — 시나리오 3 후속 (검증 실패 + 폴백)
+- [x] 4.5 `POST_api_ask_send_auto.json` — 시나리오 1 자동 응답
+- [x] 4.6 `POST_api_ask_send_divergent.json` — 시나리오 3 병기
+- [x] 4.7 `POST_api_ask_send_escalate.json` — 시나리오 2 q2
+- [x] 4.8 `GET_api_inbox.json` — 시나리오 2 인박스 (초안 3요소)
+- [x] 4.9 `GET_api_audit.json`, `GET_api_audit_zero.json`
+- [x] 4.10 **C 자신이 U4에서 소비한다** — 형태가 실제 응답과 다르면 Day 4에 UI를 다시 만든다
 
 ---
 
@@ -96,20 +96,20 @@ U3의 API 계약(Step 0)이 확정되면 즉시 작성한다.
 
 ## Step 6 · 함정 문서 🔴
 
-- [ ] 6.1 `corpus/kim/docs/sdk-pricing-tiers.md` 작성
-- [ ] 6.2 경로가 `customer-*/`가 **아니다**
-- [ ] 6.3 프런트매터에 `보안등급` **없음**
-- [ ] 6.4 겉보기는 평범한 SDK 티어 설계 문서
-- [ ] 6.5 본문 중간에 고객사별 단가 (`H社 라이선스 12억원`)
-- [ ] 6.6 `labels.json`에 `tier: secret` + `trap: true`
+- [x] 6.1 `corpus/kim/docs/sdk-pricing-tiers.md` 작성
+- [x] 6.2 경로가 `customer-*/`가 **아니다**
+- [x] 6.3 프런트매터에 `보안등급` **없음**
+- [x] 6.4 겉보기는 평범한 SDK 티어 설계 문서
+- [x] 6.5 본문 중간에 고객사별 단가 (`H社 라이선스 12억원`)
+- [x] 6.6 `labels.json`에 `tier: secret` + `trap: true`
 
 ## Step 7 · `data/labels.json`
 
-- [ ] 7.1 전 문서 등급 라벨링
-- [ ] 7.2 `reason` 필드 — 왜 그 등급인지
-- [ ] 7.3 `note` 필드 — 시나리오 연관
-- [ ] 7.4 `trap: true` — 함정 문서
-- [ ] 7.5 경로 규칙(`ClassificationRules`)과 정합 확인 (BR-D-05)
+- [x] 7.1 전 문서 등급 라벨링
+- [x] 7.2 `reason` 필드 — 왜 그 등급인지
+- [x] 7.3 `note` 필드 — 시나리오 연관
+- [x] 7.4 `trap: true` — 함정 문서
+- [x] 7.5 경로 규칙(`ClassificationRules`)과 정합 확인 (BR-D-05)
 
 ## Step 8 · `tests/eval/test_classification.py` — Day 2 게이트 🔴
 

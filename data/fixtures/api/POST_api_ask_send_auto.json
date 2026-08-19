@@ -1,0 +1,43 @@
+{
+  "request_id": "req_01JS1",
+  "merged": {
+    "answers": [
+      {
+        "entity_id": "person:kim",
+        "agent_label": "김철수 책임의 Agent",
+        "text": "충돌합니다. 고객사 H REQ-4412는 인증을 세션에 바인딩하고 자격증명 재사용을 금지하며 세션 상한이 8시간입니다. SDK v3.2는 토큰 수명이 24시간이고 세션과 무관하게 무음 갱신하므로, 세션 종료 후에도 토큰이 최대 16시간 유효하게 남습니다. 이는 재사용 금지 조항에 위배됩니다.\n\n완화안\n 1. SDK 토큰 수명을 세션 상한(8시간) 이하로 낮춘다\n 2. 세션 종료 이벤트에 토큰 무효화를 연동한다\n 3. 무음 갱신 시 세션 유효성을 재확인한다",
+        "confidence": 0.83,
+        "citations": [
+          {
+            "ref": "REQ_A",
+            "display_title": "고객사 H 요구사항명세서",
+            "section": "§2.2",
+            "tier": "secret",
+            "as_of": "2026-07-15",
+            "formality": "official"
+          },
+          {
+            "ref": "COMP_B",
+            "display_title": "SDK 인증 설계 문서",
+            "section": "§2",
+            "tier": "internal",
+            "as_of": "2026-08-19",
+            "formality": "official"
+          }
+        ],
+        "tier": "secret",
+        "used_external_agent": true,
+        "freshness": "live",
+        "session_as_of": "2026-08-19T14:31:20+09:00",
+        "unresolved_refs": []
+      }
+    ],
+    "divergent": false,
+    "divergence_note": null,
+    "disposition": "auto"
+  },
+  "escalations": [],
+  "elapsed_seconds": 11.4,
+  "interrupts_avoided": 1,
+  "minutes_saved_estimate": 20
+}

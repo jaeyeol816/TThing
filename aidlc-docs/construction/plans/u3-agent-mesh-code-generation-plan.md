@@ -21,13 +21,13 @@
 
 Day 1에 U1의 스텁과 함께 확정한다. C(U4)가 이걸 보고 목업을 만든다.
 
-- [ ] 0.1 API 요청/응답 모델을 `schemas.py` 또는 `api_models.py`에 정의
-- [ ] 0.2 `AskRequest`, `PrepareResult`, `PreparedCall`, `SendRequest`
-- [ ] 0.3 `MergedAnswer`(**`divergent`**, `conflict` 아님), `AskResult`
-- [ ] 0.4 `EscalationDraft`, `InboxItem`, `ResolveRequest`, `HealthStatus`
-- [ ] 0.5 **`PrepareResult.agents_notified: Literal[False]`** 🔴 (BR-O-03)
-- [ ] 0.6 C에게 계약 전달 → `data/fixtures/api/*.json` 작성 요청
-- [ ] 0.7 커밋
+- [x] 0.1 API 요청/응답 모델을 `schemas.py` 또는 `api_models.py`에 정의
+- [x] 0.2 `AskRequest`, `PrepareResult`, `PreparedCall`, `SendRequest`
+- [x] 0.3 `MergedAnswer`(**`divergent`**, `conflict` 아님), `AskResult`
+- [x] 0.4 `EscalationDraft`, `InboxItem`, `ResolveRequest`, `HealthStatus`
+- [x] 0.5 **`PrepareResult.agents_notified: Literal[False]`** 🔴 (BR-O-03)
+- [x] 0.6 C에게 계약 전달 → `data/fixtures/api/*.json` 작성 요청
+- [x] 0.7 커밋
 
 ---
 

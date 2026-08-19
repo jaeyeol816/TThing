@@ -21,38 +21,38 @@
 
 ## Step 1 · `config/agents.yaml`
 
-- [ ] 1.1 에이전트 3개 정의 (`u2/domain-entities.md` §4)
-- [ ] 1.2 `persona_prompt` — 필수 문구 5개 포함 (BR-AG-02)
-- [ ] 1.3 `knowledge_scope` glob — 김책임에 `corpus/customer-H/**` 포함 (협의 담당)
-- [ ] 1.4 `disclose` 블록 — 데모용 3개 모두 `true`
-- [ ] 1.5 **`agents.yaml`에 고객사명·기밀을 넣지 않는다** (프롬프트도 검증 대상)
-- [ ] 1.6 U1의 `config.py` 로더로 파싱 확인
+- [x] 1.1 에이전트 3개 정의 (`u2/domain-entities.md` §4)
+- [x] 1.2 `persona_prompt` — 필수 문구 5개 포함 (BR-AG-02)
+- [x] 1.3 `knowledge_scope` glob — 김책임에 `corpus/customer-H/**` 포함 (협의 담당)
+- [x] 1.4 `disclose` 블록 — 데모용 3개 모두 `true`
+- [x] 1.5 **`agents.yaml`에 고객사명·기밀을 넣지 않는다** (프롬프트도 검증 대상)
+- [x] 1.6 U1의 `config.py` 로더로 파싱 확인
 
 ## Step 2 · `Session` 관련 엔티티
 
 U1 `schemas.py`에 두지 않고 `store.py`에 둔다 (U2 소유).
 
-- [ ] 2.1 `RunInfo`, `EditInfo`, `DatasetInfo` (`tier` 필드 포함)
-- [ ] 2.2 `Session` — `focus`/`summary`를 **원문 취급**
-- [ ] 2.3 `VerifiedQA` — **`tier` 보존 필수** (BR-S-05)
-- [ ] 2.4 `Disclose`(`expertise: Literal[True]`), `AgentConfig`, `AgentCard`
+- [x] 2.1 `RunInfo`, `EditInfo`, `DatasetInfo` (`tier` 필드 포함)
+- [x] 2.2 `Session` — `focus`/`summary`를 **원문 취급**
+- [x] 2.3 `VerifiedQA` — **`tier` 보존 필수** (BR-S-05)
+- [x] 2.4 `Disclose`(`expertise: Literal[True]`), `AgentConfig`, `AgentCard`
 
 ## Step 3 · 세션 JSON 3개
 
-- [ ] 3.1 `data/sessions/person_kim.json` — 활동 중, `open_paths` 2개
-- [ ] 3.2 `data/sessions/person_park.json` — 학습 실행 중, `recent_runs` + `datasets(tier=secret)`
-- [ ] 3.3 `data/sessions/person_choi.json` — 2시간 전 (자리 비움)
-- [ ] 3.4 **경로가 전부 `MESH_DATA_ROOT` 상대** (`~/work/...` 금지) (BR-D-06)
-- [ ] 3.5 시각을 데모 기준(`2026-08-19T14:35`)에 맞춤
+- [x] 3.1 `data/sessions/person_kim.json` — 활동 중, `open_paths` 2개
+- [x] 3.2 `data/sessions/person_park.json` — 학습 실행 중, `recent_runs` + `datasets(tier=secret)`
+- [x] 3.3 `data/sessions/person_choi.json` — 2시간 전 (자리 비움)
+- [x] 3.4 **경로가 전부 `MESH_DATA_ROOT` 상대** (`~/work/...` 금지) (BR-D-06)
+- [x] 3.5 시각을 데모 기준(`2026-08-19T14:35`)에 맞춤
 
 ## Step 4 · `store.py` 세션 로드
 
-- [ ] 4.1 `load_session()` — JSON + `verified_qa` 병합
-- [ ] 4.2 `mtime` 비교 재로드 (데몬 없이 수동 갱신 지원, BR-S-08)
-- [ ] 4.3 `${MESH_DATA_ROOT}` 치환 (U1 `safe_resolve()` 사용)
-- [ ] 4.4 `freshness()` — 3단 판정. `MESH_DEMO_NOW` 지원 (BR-S-04)
-- [ ] 4.5 `append_verified()` — 추가 전용, `tier` 보존
-- [ ] 4.6 `tests/unit/test_store_session.py` — 3개 세션 로드, 신선도 시각 조작
+- [x] 4.1 `load_session()` — JSON + `verified_qa` 병합
+- [x] 4.2 `mtime` 비교 재로드 (데몬 없이 수동 갱신 지원, BR-S-08)
+- [x] 4.3 `${MESH_DATA_ROOT}` 치환 (U1 `safe_resolve()` 사용)
+- [x] 4.4 `freshness()` — 3단 판정. `MESH_DEMO_NOW` 지원 (BR-S-04)
+- [x] 4.5 `append_verified()` — 추가 전용, `tier` 보존
+- [x] 4.6 `tests/unit/test_store_session.py` — 3개 세션 로드, 신선도 시각 조작
 
 ---
 
