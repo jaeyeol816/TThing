@@ -1,0 +1,54 @@
+[project]
+name = "delegate-agent-mesh"
+version = "0.1.0"
+description = "대리 에이전트 메시 — 지식을 가진 사람 앞에 대리 에이전트를 세우고, 기밀은 구조만 경계 밖으로 보낸다"
+requires-python = ">=3.12,<3.13"
+
+# 의존성 6개 유지가 설계 목표다 (NFR-M-01).
+# 하나 추가할 때마다 다른 컴퓨터에서의 실패 확률이 올라간다.
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.4",
+    "httpx==0.28.1",
+    "boto3==1.35.90",          # 1.35.x 이상 필수 — 구버전은 bedrock 서비스를 모른다 (실측)
+    "pyyaml==6.0.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "hypothesis==6.123.2",
+    "pip-audit==2.7.3",
+    "ruff==0.8.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mesh"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+ignore = [
+    "S101",  # assert — 테스트에서 쓴다
+    "E501",  # line-length 는 formatter 가 관리
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B011"]
+"scripts/*" = ["S603", "S607"]

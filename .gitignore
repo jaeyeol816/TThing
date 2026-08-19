@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# 자격증명 — 워크스페이스에 평문으로 존재한다. 커밋 금지.
+# 해커톤 종료 후 Friendli 키를 폐기·재발급할 것. (SECURITY-12)
+# ─────────────────────────────────────────────────────────────
+.kiro/.env
+.kiro/opencode.jsonc
+.env
+*.pem
+*.key
+*credentials*
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+
+# 런타임 데이터 (재생성 가능)
+data/mesh.db
+data/mesh.db-shm
+data/mesh.db-wal
+data/verified/*.json
+!data/verified/.gitkeep
+data/sessions/local-*.json
+
+# CDK
+infra/.venv/
+infra/cdk.out/
+infra/lambda/agent_broker/_bundled/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
