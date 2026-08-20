@@ -313,8 +313,14 @@ def test_zero_citations_blocks_even_at_high_confidence(client, wiring):
 
 
 def test_one_of_two_failing_still_returns_the_other(client, wiring, full_data_root):
-    """2명 중 1명이 실패해도 나머지 답변은 온다 (R-02)."""
-    (full_data_root / "sessions" / "person_choi.json").unlink()
+    """2명 중 1명이 실패해도 나머지 답변은 온다 (R-02).
+
+    ⚠️ 세션 경로를 손으로 적지 않는다. `agents/{id}/gatekeeper/session.json` 로
+       레이아웃이 바뀌었을 때 이 테스트가 옛 경로(`sessions/person_choi.json`)를
+       지우려다 **테스트 자체가 실패**했다 — R-02 를 검사하지 못하는 상태로
+       한동안 빨간불이었다. 경로는 `Config` 에게 묻는다.
+    """
+    wiring.cfg.agent_session_path("person:choi").unlink()
     prepared = _prepare(client, Q3, ["person:kim", "person:choi"])
     ready = [c for c in prepared["calls"] if c["disposition"] == "ready"]
     blocked = [c for c in prepared["calls"] if c["disposition"] == "blocked"]
@@ -339,22 +345,28 @@ def test_security_headers_present(client):
         assert headers.get(key) == value
 
 
-def test_adding_a_fourth_agent_needs_no_code_change(client, wiring):
-    """`agents.yaml` 에 항목 하나 더하는 것으로 끝난다 (FR-23)."""
+def test_adding_one_more_agent_needs_no_code_change(client, wiring):
+    """`agents.yaml` 에 항목 하나 더하는 것으로 끝난다 (FR-23).
+
+    ⚠️ 여기 쓰는 `entity_id` 는 **실제 설정에 없는 것**이어야 한다. 예전에는
+       `person:han` 이었는데 그 사람이 진짜로 조직도에 들어오면서 "추가했지만
+       인원이 그대로" 가 되어 테스트가 깨졌다. 실재하지 않을 이름을 쓴다.
+    """
     from mesh.schemas import AgentConfig
 
     before = len(client.get("/api/agents").json())
-    wiring.data.agents["person:han"] = AgentConfig(
-        entity_id="person:han",
-        display_name="한지원 연구원",
+    assert "person:testonly" not in wiring.data.agents
+    wiring.data.agents["person:testonly"] = AgentConfig(
+        entity_id="person:testonly",
+        display_name="테스트 연구원",
         expertise="모델 평가",
         persona_prompt="평가 담당입니다.",
         knowledge_scope=("corpus/public/**",),
-        escalation_inbox="person:han",
+        escalation_inbox="person:testonly",
     )
     after = client.get("/api/agents").json()
     assert len(after) == before + 1
-    assert "person:han" in {c["entity_id"] for c in after}
+    assert "person:testonly" in {c["entity_id"] for c in after}
 
 
 def test_health_exposes_the_simulated_boundary(client):
@@ -370,11 +382,17 @@ def test_full_sweep_finds_no_leak(client, wiring):
     prepared = _prepare(client, Q1, ["person:kim"])
     _send(client, prepared)
 
+    # ⚠️ 스캔 범위를 `corpus/` 로 못 박지 않는다. 지식 파일이
+    #    `agents/{id}/data/**` 로 옮겨졌을 때 이 목록이 **0건**이 됐고,
+    #    "전수 검사 통과" 가 아무것도 검사하지 않은 통과였다.
+    #    아래 `documents_scanned` 하한이 그 실패를 잡는 장치다.
     root = Path(wiring.cfg.data_root)
     documents = [
         (p.relative_to(root).as_posix(), p.read_text(encoding="utf-8", errors="replace"))
-        for p in (root / "corpus").rglob("*")
+        for p in root.rglob("*")
         if p.is_file()
+        and p.suffix in {".md", ".txt", ".yaml", ".yml", ".py", ".log"}
+        and "fixtures" not in p.parts
     ]
     report = wiring.audit.sweep_for_leaks(
         documents,

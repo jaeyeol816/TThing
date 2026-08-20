@@ -1,0 +1,125 @@
+# 조직도 정의
+#
+# ──────────────────────────────────────────────────────────────────────
+# 왜 별도 파일인가
+# ──────────────────────────────────────────────────────────────────────
+#
+# `agents.yaml` 은 **사람**을 정의하고 이 파일은 **자리**를 정의한다.
+# 사람이 팀을 옮기면 `agents.yaml` 의 `org.unit` 한 줄만 바뀌고,
+# 조직 개편이 일어나면 이 파일만 바뀐다. 두 축이 서로를 건드리지 않는다.
+#
+# ──────────────────────────────────────────────────────────────────────
+# 깊이를 코드에 박지 않는다
+# ──────────────────────────────────────────────────────────────────────
+#
+# 본부 → 센터/연구소 → 팀 은 **이 회사의 현재 모습일 뿐**이다.
+# `units` 는 `parent` 로 이어지는 일반 트리이고, `unit_kinds` 는 각 층에
+# 붙일 라벨·아이콘을 선언할 뿐이다. 층을 하나 더 넣고 싶으면
+# `unit_kinds` 에 항목을 더하고 `units` 에 `parent` 를 이어 붙이면 된다.
+# 코드(`src/mesh/org.py`)는 층 이름을 하나도 알지 못한다.
+#
+# ⚠️ 여기에 고객사명·계약번호를 넣지 않는다. 조직도는 인증 없이 보이는
+#    화면이다 (FR-31 과 같은 이유).
+
+version: 1
+
+#: 계층의 종류. 순서가 곧 기본 표시 순서이며, depth 와 무관하게 라벨을 준다.
+unit_kinds:
+  - id: division
+    label: 본부
+    icon: building
+  - id: center
+    label: 센터·연구소
+    icon: layers
+  - id: team
+    label: 팀
+    icon: users
+
+#: 직급. `order` 가 팀 안에서의 정렬 기준이다 (작을수록 위).
+#: `leads: true` 인 직급은 UI 가 팀 대표로 먼저 그린다.
+ranks:
+  - id: task_leader
+    label: Task Leader
+    short: TL
+    order: 10
+    leads: true
+  - id: principal
+    label: 책임연구원
+    short: 책임
+    order: 20
+  - id: senior
+    label: 선임연구원
+    short: 선임
+    order: 30
+  - id: researcher
+    label: 연구원
+    short: 연구원
+    order: 40
+
+#: 조직 단위. `parent: null` 이 최상위다.
+units:
+  # ── VS본부 (Vehicle Solution) — 데모에서 사람이 있는 본부 ──────────
+  - id: vs
+    kind: division
+    name: VS본부
+    parent: null
+    description: 차량 소프트웨어 솔루션
+
+  - id: vs-sw-center
+    kind: center
+    name: SW플랫폼센터
+    parent: vs
+    description: 공통 SW 플랫폼 · 인증 · 데이터
+
+  - id: vs-auth-team
+    kind: team
+    name: 인증플랫폼팀
+    parent: vs-sw-center
+    description: SDK 인증 · SSO · 토큰 정책 · 키 관리
+
+  - id: vs-data-team
+    kind: team
+    name: 데이터플랫폼팀
+    parent: vs-sw-center
+    description: 전처리 파이프라인 · 피처 스토어 · 모델 학습 · 서빙
+
+  # ── 나머지 본부 — 구조가 데이터라는 것을 보이기 위해 선언만 해 둔다 ──
+  #    구성원이 0명인 단위는 화면이 접어서 그린다. 사람을 넣으려면
+  #    agents.yaml 에 `org.unit: ms-conn-team` 을 쓰기만 하면 된다.
+  - id: ms
+    kind: division
+    name: MS본부
+    parent: null
+    description: 모빌리티 서비스
+
+  - id: ms-conn-center
+    kind: center
+    name: 커넥티비티센터
+    parent: ms
+
+  - id: ms-conn-team
+    kind: team
+    name: 커넥티드카팀
+    parent: ms-conn-center
+
+  - id: hs
+    kind: division
+    name: HS본부
+    parent: null
+    description: 홈 솔루션
+
+  - id: hs-device-center
+    kind: center
+    name: 디바이스센터
+    parent: hs
+
+  - id: cto
+    kind: division
+    name: CTO부문
+    parent: null
+    description: 선행 연구 · 표준
+
+  - id: cto-research-lab
+    kind: center
+    name: 선행기술연구소
+    parent: cto

@@ -48,6 +48,7 @@ from mesh.exceptions import (
 )
 from mesh.schemas import (
     AgentCard,
+    AgentConfig,
     Chunk,
     DatasetInfo,
     EditInfo,
@@ -786,6 +787,7 @@ class KnowledgeStore:
 
         for entity_id, agent in self.data.agents.items():
             disclose = agent.disclose
+            org = self._org_fields(agent)
             try:
                 session = self.load_session(entity_id)
             except SessionNotFound:
@@ -797,6 +799,7 @@ class KnowledgeStore:
                         display_name=agent.display_name,
                         expertise=agent.expertise,
                         daily_limit_reached=self._limit_reached(entity_id, agent.daily_limit),
+                        **org,
                     )
                 )
                 continue
@@ -824,9 +827,45 @@ class KnowledgeStore:
                     session_as_of=session.updated_at if disclose.current_focus else None,
                     freshness=fresh if disclose.activity_status else None,
                     daily_limit_reached=self._limit_reached(entity_id, agent.daily_limit),
+                    **org,
                 )
             )
         return cards
+
+    def _org_fields(self, agent: AgentConfig) -> dict[str, object]:
+        """조직도 좌표를 카드에 실을 형태로 편다.
+
+        ⚠️ **조직도가 없어도 빈 dict 를 돌려준다.** 조직도는 표시용이고,
+           자리를 못 찾았다고 그 사람이 목록에서 사라지면 안 된다 —
+           화면은 평평한 목록을 그리면 그만이다 (fail soft).
+
+        ⚠️ `disclose` 를 보지 않는 것이 의도적이다. 소속과 직급은 조직도에
+           이미 인증 없이 떠 있는 값이고, 여기서 숨겨도 `GET /api/org` 로
+           보인다. 같은 사실을 두 화면이 다르게 말하면 그게 더 나쁘다.
+        """
+        chart = getattr(self.data, "org", None)
+        place = agent.org
+        if chart is None or place is None:
+            return {}
+        unit = chart.unit(place.unit)
+        rank = chart.rank(place.rank)
+        if unit is None or rank is None:
+            # `org.yaml` 에 없는 id 다. 조용히 넘기지 않고 로그를 남긴다 —
+            # 오타는 화면에서 사람이 사라지는 방식으로만 드러난다.
+            log.warning(
+                "조직도에 없는 자리 — 미배치로 그린다",
+                extra=log_extra(entity_id=agent.entity_id, unit=place.unit, rank=place.rank),
+            )
+            return {}
+        return {
+            "unit_id": unit.id,
+            "unit_path": chart.unit_path(unit.id),
+            "rank_id": rank.id,
+            "rank_label": rank.label,
+            "rank_badge": rank.badge,
+            "rank_order": rank.order,
+            "org_title": place.title or None,
+        }
 
     async def _focus_summary(self, session: Session) -> str | None:
         """게이트키퍼를 경유한 주제 라벨. 캐시 키는 `(entity_id, updated_at)`.

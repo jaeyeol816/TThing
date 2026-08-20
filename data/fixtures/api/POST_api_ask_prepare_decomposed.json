@@ -71,7 +71,8 @@
         "verbatim_sentence_count": 0
       },
       "fallback": null,
-      "blocked_reason": null
+      "blocked_reason": null,
+      "trace_id": null
     },
     {
       "envelope_id": "env_CCCCCCCCCCCCCCCCCCCCCC",
@@ -143,7 +144,8 @@
         "verbatim_sentence_count": 0
       },
       "fallback": null,
-      "blocked_reason": null
+      "blocked_reason": null,
+      "trace_id": null
     }
   ],
   "decomposed": true,

@@ -10,7 +10,15 @@
       "current_focus_summary": "인증 관련 작업 중",
       "session_as_of": "2026-08-19T14:31:20+09:00",
       "freshness": "live",
-      "daily_limit_reached": false
+      "daily_limit_reached": false,
+      "node_name": null,
+      "unit_id": null,
+      "unit_path": [],
+      "rank_id": null,
+      "rank_label": null,
+      "rank_badge": null,
+      "rank_order": null,
+      "org_title": null
     },
     {
       "entity_id": "person:park",
@@ -22,7 +30,15 @@
       "current_focus_summary": "모델 학습 실행 중",
       "session_as_of": "2026-08-19T14:33:05+09:00",
       "freshness": "live",
-      "daily_limit_reached": false
+      "daily_limit_reached": false,
+      "node_name": null,
+      "unit_id": null,
+      "unit_path": [],
+      "rank_id": null,
+      "rank_label": null,
+      "rank_badge": null,
+      "rank_order": null,
+      "org_title": null
     },
     {
       "entity_id": "person:choi",
@@ -34,7 +50,15 @@
       "current_focus_summary": "배포 준비 작업 중",
       "session_as_of": "2026-08-19T12:30:00+09:00",
       "freshness": "stale",
-      "daily_limit_reached": false
+      "daily_limit_reached": false,
+      "node_name": null,
+      "unit_id": null,
+      "unit_path": [],
+      "rank_id": null,
+      "rank_label": null,
+      "rank_badge": null,
+      "rank_order": null,
+      "org_title": null
     }
   ]
 }

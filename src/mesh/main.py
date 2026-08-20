@@ -53,11 +53,14 @@ from mesh.api_models import (
     AskResult,
     AuditRowView,
     AuditSearchResult,
+    BroadcastRequest,
+    BroadcastResult,
     DocumentList,
     ErrorResponse,
     HealthStatus,
     InboxItem,
     MergedRulesView,
+    OrgChartResponse,
     PeerAnswer,
     PeerIdentity,
     PeerNodeView,
@@ -94,6 +97,7 @@ from mesh.llm.exaone import ExaoneClient
 from mesh.orchestrator import Orchestrator
 from mesh.peer import PeerClient, PeerRegistry
 from mesh.store import KnowledgeStore
+from mesh.trace import GatekeeperTrace, TraceStore
 
 log = get_logger("main")
 
@@ -163,6 +167,12 @@ class Services:
         self.inbox = Inbox(cfg, self.audit)
         self.documents = DocumentService(cfg, self.data, self.store, self.gatekeeper)
 
+        # ⚠️ 트레이스는 **메모리에만** 산다 (TTL 30분). 파일로 쓰지 않는 이유는
+        #    `trace.TraceStore` 에 적혀 있다 — 답변에 등장한 기호의 매핑을
+        #    일부 품고 있고, 그것이 디스크에 남으면 `Mapping` 이 직렬화 불가인
+        #    이유(BR-G-09)를 우회하는 셈이 된다.
+        self.traces = TraceStore()
+
         # ── 피어 메시 ────────────────────────────────────────────────
         #
         # ⚠️ `peers` 가 비어 있으면 레지스트리를 만들지 않는다 (`None`).
@@ -194,6 +204,7 @@ class Services:
             self.audit,
             self.inbox,
             peers=self.peers,
+            traces=self.traces,
         )
 
     async def aclose(self) -> None:
@@ -589,6 +600,58 @@ def _install_routes(app: FastAPI) -> None:
     async def agents(request: Request) -> list[AgentCardView]:
         cards = await _services(request).orchestrator.agent_cards()
         return [AgentCardView.model_validate(c.model_dump()) for c in cards]
+
+    # ── 조직도 ───────────────────────────────────────────────────────
+
+    @app.get("/api/org", response_model=OrgChartResponse)
+    async def org_chart(request: Request) -> OrgChartResponse:
+        """본부 → 센터/연구소 → 팀 → 사람의 트리.
+
+        ⚠️ **인증 없이 보이는 화면이다** (FR-31 과 같은 위험). 여기 실리는
+           문자열은 `config/org.yaml` 뿐이고, 금칙어 검사는 로드 시점에
+           끝난다 (`OrgChart.validate_no_banned`). 사람 이름·직급은 여기
+           없다 — `member_ids` 만 있고 표시 정보는 `/api/agents` 가 준다.
+
+        조직도 파일이 없으면 빈 트리를 돌려준다. 화면은 평평한 목록을
+        그리면 되고, 질의는 조직도 없이도 동작한다.
+        """
+        svc = _services(request)
+        view = svc.data.org.to_view(svc.data.placements)
+        return OrgChartResponse.model_validate(view.model_dump())
+
+    # ── 브로드캐스트: 지목보다 먼저 오는 단계 ────────────────────────
+
+    @app.post("/api/ask/broadcast", response_model=BroadcastResult)
+    async def broadcast(request: Request, body: BroadcastRequest) -> BroadcastResult:
+        """질문을 전원에게 뿌리고 **답할 수 있는 사람만 남긴다.**
+
+        ⚠️ 이 왕복은 경계를 넘지 않는다 (`crossed_boundary: Literal[False]`).
+           문서를 읽지 않고, 경계 밖 Agent 를 부르지 않고, 담당자 인박스에
+           아무것도 쓰지 않는다. 그래서 감사 레코드도 없다 — 나간 것이 없다.
+
+        실제 질의는 사용자가 사람을 고른 뒤 `/api/ask/prepare` 부터 시작한다.
+        선별은 목록을 줄일 뿐이고 **지목은 여전히 사람이 한다** (FR-29).
+        """
+        return await _services(request).orchestrator.broadcast(body)
+
+    # ── 처리 경과 (게이트키퍼 트레이스) ──────────────────────────────
+
+    @app.get("/api/trace/{trace_id}", response_model=GatekeeperTrace)
+    async def trace(request: Request, trace_id: str) -> GatekeeperTrace:
+        """말풍선의 "경과 보기" 가 여는 것.
+
+        ⚠️ **loopback 전용이다** (`_origin_gate` 가 원격을 막는다). 트레이스는
+           답변에 등장한 기호의 매핑 일부를 담고, 그것은 재수화된 실제 이름이다.
+
+        ⚠️ TTL(30분)이 지나면 404 다. 감사 로그와 달리 트레이스는 사라져야
+           한다 — 법적 증거는 `audit.py` 가 맡고 이것은 설명용이다.
+        """
+        found = _services(request).traces.get(trace_id)
+        if found is None:
+            raise HTTPException(
+                status_code=404, detail="처리 경과가 만료되었거나 존재하지 않습니다"
+            )
+        return found
 
     # ── 질문: prepare / send 2단계 (BR-M-02) ─────────────────────────
 

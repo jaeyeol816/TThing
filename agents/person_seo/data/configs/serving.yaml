@@ -1,0 +1,19 @@
+# 서빙 설정 — 시험 환경
+#
+# ⚠️ 운영 설정이 아니다. 시험 결과가 확정되기 전까지 운영에 옮기지 않는다.
+
+runtime:
+  max_batch_size: 4
+  max_queue_delay_ms: 8
+  quantization: int8
+  warmup_requests: 32
+
+autoscale:
+  min_replicas: 1
+  max_replicas: 4
+  #: 큐 대기 시간이 이 값을 넘으면 확장한다. 지연 목표에서 역산했다.
+  target_queue_delay_ms: 15
+
+limits:
+  max_input_tokens: 512
+  request_timeout_ms: 3000

@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:shin",
+  "updated_at": "2026-08-19T14:15:00+09:00",
+  "focus": "피처 스토어 보존 정책 재정의",
+  "summary": "파생 피처의 보존 기간과 등급 승계 규칙을 정리 중. 원본 등급을 따르는 규칙을 문서로 고정하려 함",
+  "open_paths": [
+    "person_shin/data/docs/feature-store-design.md",
+    "person_shin/data/docs/data-retention-policy.md"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_shin/data/docs/data-retention-policy.md",
+      "at": "2026-08-19T13:40:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

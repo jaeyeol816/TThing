@@ -11,13 +11,39 @@
 구현하지 않은 것과, 그래서 함께 사라진 문제 (BR-O-01)
 ──────────────────────────────────────────────────────────────────────
 
-    전문성 매칭 · 임베딩 · 브로드캐스트 · 자동 재지목 · 에이전트 점수화
+    임베딩 · 자동 재지목 · 에이전트 점수화 누적 · 자동 전송
 
-    -> 오라우팅 없음
-    -> 기밀 질문이 전사에 뿌려질 일 없음
+    -> 오라우팅이 사람 몰래 일어나지 않음
     -> 프로필 노후·콜드스타트 없음
 
-`targets` 는 요청에서 그대로 온다. **지목은 사람이 한다** (FR-29).
+`prepare`/`send` 의 `targets` 는 여전히 요청에서 그대로 온다.
+**지목은 사람이 한다** (FR-29).
+
+──────────────────────────────────────────────────────────────────────
+브로드캐스트는 들어왔다 — 원래 걱정하던 것이 왜 안 생기는가
+──────────────────────────────────────────────────────────────────────
+
+이 파일은 원래 브로드캐스트를 "구현하지 않은 것" 목록에 넣고 그 근거로
+**"기밀 질문이 전사에 뿌려질 일 없음"** 을 들었다. `broadcast()` 가 생겼으니
+그 근거를 다시 세워야 한다. 세 가지가 성립하므로 위험이 따라 들어오지 않는다.
+
+  1. **질문이 남에게 도달하지 않는다.**
+     선별은 이 노드 안에서 끝난다. 인박스에 쓰지 않고 알림을 만들지 않는다.
+     `agents_notified` 가 `prepare` 에서 `Literal[False]` 인 것과 같은 약속이,
+     브로드캐스트에서는 `BroadcastResult.crossed_boundary: Literal[False]` 다.
+
+  2. **판정이 남의 문서를 읽지 않는다.**
+     재료는 `expertise` · `topics` · 조직도 단위 이름 · 게이트키퍼를 이미
+     지난 focus 라벨뿐이다 (`mesh.triage` 머리말). 전부 이미 인증 없이
+     보이는 값이라, 열 명에게 뿌려도 새로 노출되는 것이 0 이다.
+
+  3. **선별이 전송을 결정하지 않는다.**
+     선별 결과는 목록을 줄일 뿐이고, 무엇이 경계를 넘을지는 사용자가 사람을
+     고른 뒤 `prepare()` 부터 게이트키퍼가 정한다. 선별을 속여도 얻는 것은
+     "후보 목록에 남는 것" 뿐이다.
+
+즉 **바뀐 것은 지목의 시점**이다. 사람이 먼저 고르던 것을, 후보를 좁힌 뒤에
+고르게 했다. 고르는 주체는 그대로 사람이다.
 
 ──────────────────────────────────────────────────────────────────────
 두 단계로 나눈 이유 (BR-M-02)
@@ -40,8 +66,11 @@ from dataclasses import dataclass, field
 
 from mesh.agent import AgentClient, DailyLimitReached
 from mesh.api_models import (
+    AgentRelevanceView,
     AskRequest,
     AskResult,
+    BroadcastRequest,
+    BroadcastResult,
     MergedAnswer,
     PeerPrepareRequest,
     PeerSendRequest,
@@ -62,7 +91,7 @@ from mesh.exceptions import (
 from mesh.gatekeeper import Gatekeeper
 from mesh.inbox import Inbox
 from mesh.peer import PeerRegistry
-from mesh.rehydrator import symbols_in
+from mesh.rehydrator import answer_to_text, symbols_in
 from mesh.schemas import (
     AgentCard,
     AgentResponse,
@@ -77,6 +106,8 @@ from mesh.schemas import (
     TierDecision,
 )
 from mesh.store import KnowledgeStore, SessionNotFound, confidence_factor
+from mesh.trace import TraceEvidence, TraceRecorder, TraceStore
+from mesh.triage import Candidate, triage
 from mesh.validator import normalize_text, passthrough_validation
 
 log = get_logger("orchestrator")
@@ -93,6 +124,10 @@ DIVERGENCE_NOTE = (
 
 def new_request_id() -> str:
     return f"req_{uuid.uuid4().hex[:20]}"
+
+
+def new_broadcast_id() -> str:
+    return f"bc_{uuid.uuid4().hex[:20]}"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -247,10 +282,18 @@ class PrepareFailed(MeshError):
     두 결과가 갈릴 여지를 만든다.
     """
 
-    def __init__(self, error: BaseException, chunks: Sequence[Chunk] = ()) -> None:
+    def __init__(
+        self,
+        error: BaseException,
+        chunks: Sequence[Chunk] = (),
+        trace: TraceRecorder | None = None,
+    ) -> None:
         super().__init__(str(error))
         self.error = error
         self.chunks = list(chunks)
+        #: 어디까지 갔다가 멈췄는지의 기록. 폴백 답변에도 "경과 보기" 가
+        #: 붙어야 한다 — 막힌 질의야말로 이유를 보여줘야 하는 쪽이다.
+        self.trace = trace
 
 
 @dataclass(slots=True)
@@ -283,6 +326,11 @@ class PendingCall:
     remote_node: str | None = None
     #: 사람이 읽을 노드 이름. 화면과 로그에 쓴다.
     remote_node_name: str | None = None
+    #: 처리 경과 기록기. `prepare` 가 ①~④ 를 채우고 `send` 가 ⑤~⑥ 을 잇는다.
+    #:
+    #: 두 HTTP 왕복에 걸쳐 같은 기록기를 써야 하므로 여기 들고 있는다.
+    #: `None` 이면 기록에 실패한 것이고, 그때도 질의는 정상으로 돈다.
+    trace: TraceRecorder | None = None
 
     @property
     def is_remote(self) -> bool:
@@ -326,6 +374,7 @@ class Orchestrator:
         audit: AuditLog,
         inbox: Inbox,
         peers: PeerRegistry | None = None,
+        traces: TraceStore | None = None,
     ) -> None:
         self.cfg = cfg
         self.data = data
@@ -336,6 +385,9 @@ class Orchestrator:
         self.inbox = inbox
         #: 없으면 단독 노드다. 있으면 원격 대상을 그 노드에 위임한다.
         self.peers = peers
+        #: 처리 경과 보관소. 없으면 트레이스를 만들지 않는다 —
+        #: 화면이 "경과 보기" 를 그리지 않을 뿐 질의는 그대로 돈다.
+        self.traces = traces
         self._pending: dict[str, PendingRequest] = {}
 
     # ── 목록 ─────────────────────────────────────────────────────────
@@ -374,6 +426,174 @@ class Orchestrator:
             return cards
         cards.extend(card for _, card in remote)
         return cards
+
+    # ── 브로드캐스트 (선별) ──────────────────────────────────────────
+
+    async def broadcast(self, request: BroadcastRequest) -> BroadcastResult:
+        """질문 하나를 전원에게 뿌리고 **답할 수 있는 사람만 남긴다.**
+
+        ⚠️ 이 메서드는 경계를 넘지 않는다. 문서를 읽지 않고, Agent 를 부르지
+           않고, 감사 레코드를 만들지 않는다 — 경계를 넘은 것이 없으므로
+           기록할 것이 없다. 판정 재료는 이미 인증 없이 보이는 값뿐이다
+           (`mesh.triage` 머리말, 이 파일 머리말 §브로드캐스트).
+
+        ⚠️ **결과에서 사람을 지우지 않는다.** 관련 없다고 판정된 사람도
+           `results` 에 `relevant=False` 로 남는다. 화면이 흐리게 그릴 뿐이다.
+           지워 버리면 판정이 틀렸을 때 사용자가 되돌릴 대상이 없어진다.
+
+        판정 실패는 예외로 올리지 않는다. 모델이 죽으면 규칙 결과만 쓰고
+        `model_used=False` 로 그 사실을 화면에 밝힌다.
+        """
+        started = time.monotonic()
+        cards = await self.agent_cards()
+
+        candidates = [
+            self._to_candidate(card)
+            for card in cards
+            if card.entity_id != request.asker
+        ]
+        outcome = await triage(
+            request.question,
+            candidates,
+            # ⚠️ 게이트키퍼가 들고 있는 **신뢰 구역** 모델이다. 이 파일은
+            #    모델 클라이언트를 import 하지 않는다 (BR-O 의 오래된 약속).
+            exaone=self.gatekeeper.exaone,
+            threshold=self.cfg.broadcast_threshold,
+            max_relevant=min(request.max_relevant, self.cfg.broadcast_max_relevant),
+        )
+
+        by_id = {c.entity_id: c for c in candidates}
+        names = {c.entity_id: c.display_name for c in cards}
+        results = tuple(
+            AgentRelevanceView(
+                entity_id=v.entity_id,
+                display_name=names.get(v.entity_id, v.entity_id),
+                relevant=v.relevant,
+                score=v.score,
+                reason_code=v.reason_code,
+                reason=v.reason,
+                matched=v.matched,
+                decided_by=v.decided_by,
+                available=by_id[v.entity_id].available,
+                unavailable_reason=(
+                    None
+                    if by_id[v.entity_id].available
+                    else "오늘 받을 수 있는 질문 수를 다 채웠습니다"
+                ),
+            )
+            for v in outcome.verdicts
+        )
+        log.info(
+            "브로드캐스트 선별 완료",
+            extra=log_extra(
+                asker=request.asker,
+                candidates=len(candidates),
+                relevant=sum(1 for r in results if r.relevant),
+                model_used=outcome.model_used,
+            ),
+        )
+        return BroadcastResult(
+            broadcast_id=new_broadcast_id(),
+            question=request.question,
+            results=results,
+            threshold=outcome.threshold,
+            model_used=outcome.model_used,
+            model_note=(
+                None
+                if outcome.model_used
+                else "선별 모델을 쓰지 못해 규칙만으로 좁혔습니다"
+            ),
+            elapsed_seconds=round(time.monotonic() - started, 3),
+        )
+
+    def _to_candidate(self, card: AgentCard) -> Candidate:
+        """`AgentCard` -> 판정 입력. **카드에 없는 것은 넣지 않는다.**
+
+        `topics` 와 `leads` 는 카드에 없고 설정에 있으므로 여기서 붙인다.
+        원격 노드의 사람은 이 노드에 설정이 없으므로 둘 다 비고, 판정은
+        `expertise` 문장만으로 이뤄진다 — 그래도 목록에는 남는다.
+        """
+        agent = self.data.agents.get(card.entity_id)
+        rank = self.data.org.rank(agent.org.rank) if agent and agent.org else None
+        return Candidate(
+            entity_id=card.entity_id,
+            display_name=card.display_name,
+            expertise=card.expertise,
+            topics=agent.topics if agent else (),
+            unit_path=card.unit_path,
+            unit_id=card.unit_id,
+            rank_label=card.rank_label or "",
+            org_title=card.org_title or "",
+            focus_label=card.current_focus_summary or "",
+            leads=bool(rank and rank.leads),
+            available=not card.daily_limit_reached,
+        )
+
+    # ── 트레이스 보조 ────────────────────────────────────────────────
+
+    def _new_trace(
+        self, *, request_id: str, target: str, question: str, agent_label: str = ""
+    ) -> TraceRecorder | None:
+        """보관소가 없으면 기록기도 만들지 않는다 — 쌓기만 하고 버리지 않는다."""
+        if self.traces is None:
+            return None
+        rec = TraceRecorder(request_id=request_id, entity_id=target, question=question)
+        rec.agent_label = agent_label
+        return rec
+
+    def _keep_trace(self, rec: TraceRecorder | None) -> str | None:
+        """지금까지 쌓인 것을 보관소에 넣는다. 같은 `trace_id` 면 덮어쓴다.
+
+        `prepare` 끝과 `send` 끝에 각각 부른다. 중간 상태도 보관하는 이유:
+        검증에서 막혀 `send` 가 아예 없는 경우에도 "어디서 멈췄나" 를 열어
+        볼 수 있어야 한다.
+        """
+        if rec is None or self.traces is None:
+            return None
+        try:
+            return self.traces.put(rec.build())
+        except Exception:  # noqa: BLE001 — 트레이스가 질의를 죽이면 안 된다
+            log.exception("트레이스 보관 실패 — 무시한다")
+            return None
+
+    @staticmethod
+    def _evidence(
+        chunks: Sequence[Chunk], decisions: dict[str, TierDecision] | None = None
+    ) -> tuple[TraceEvidence, ...]:
+        """`Chunk` -> `TraceEvidence` **투영**.
+
+        ⚠️ 이 함수가 여기 있는 이유가 설계다. `mesh.trace` 는 `Chunk` 를
+           import 하지 않는다 — 원문과 내부 경로를 아예 받지 않기 위해서다
+           (`TraceEvidence` 주석). 그래서 **이미 원문을 다루는 쪽**인 여기서
+           투영을 만들어 넘긴다. 원문을 만질 수 있는 모듈이 늘지 않는다.
+
+           `text` 는 길이만, `internal_path` 는 아예 넘어가지 않는다 (FR-43).
+        """
+        picked = dict(decisions or {})
+        out: list[TraceEvidence] = []
+        for chunk in chunks:
+            decision = picked.get(chunk.chunk_id)
+            out.append(
+                TraceEvidence(
+                    title=chunk.display_title,
+                    tier=chunk.tier or (decision.tier if decision else None),
+                    source_kind=chunk.source_kind or "",
+                    as_of=chunk.as_of.isoformat() if chunk.as_of else "",
+                    chars=len(chunk.text),
+                    truncated=chunk.truncated,
+                    rule_tier=decision.rule_tier if decision else None,
+                    exaone_tier=decision.exaone_tier if decision else None,
+                    exaone_note=(
+                        "규칙이 이미 기밀 — 호출 생략"
+                        if decision and decision.exaone_skipped
+                        else "판정 실패 → 기밀로 간주"
+                        if decision and decision.exaone_failed
+                        else ""
+                    ),
+                    reasons=decision.reasons if decision else (),
+                )
+            )
+        return tuple(out)
 
     # ── prepare (BR-O-03) ────────────────────────────────────────────
 
@@ -429,17 +649,24 @@ class Orchestrator:
     async def _prepare_one(
         self, request: AskRequest, target: str, pending: PendingRequest
     ) -> tuple[PreparedCall, tuple[Tier, str] | None]:
-        """실패는 `PrepareFailed` 로 감싼다 — 판정된 근거를 폴백에 넘기기 위해서다."""
+        """실패는 `PrepareFailed` 로 감싼다 — 판정된 근거를 폴백에 넘기기 위해서다.
+
+        기록기를 **여기서** 만드는 이유: 실패해도 그때까지의 경과가 폴백까지
+        따라가야 한다. `_prepare_inner` 안에서 만들면 예외와 함께 사라진다.
+        """
         classified: list[Chunk] = []
+        rec = self._new_trace(
+            request_id=pending.request_id, target=target, question=request.question
+        )
         try:
             node = self.peers.node_of(target) if self.peers else None
             if node is not None:
                 return await self._prepare_remote(request, target, pending, node)
-            return await self._prepare_inner(request, target, pending, classified)
+            return await self._prepare_inner(request, target, pending, classified, rec)
         except PrepareFailed:
             raise
         except Exception as e:  # noqa: BLE001 — 폴백에 근거를 넘기고 다시 올린다
-            raise PrepareFailed(e, classified) from e
+            raise PrepareFailed(e, classified, trace=rec) from e
 
     async def _prepare_remote(
         self, request: AskRequest, target: str, pending: PendingRequest, node: str
@@ -491,6 +718,7 @@ class Orchestrator:
         target: str,
         pending: PendingRequest,
         classified: list[Chunk],
+        rec: TraceRecorder | None = None,
     ) -> tuple[PreparedCall, tuple[Tier, str] | None]:
         agent_cfg = self.data.agent(target)
         persona = agent_cfg.to_persona()
@@ -501,10 +729,18 @@ class Orchestrator:
         factor = confidence_factor(fresh, stale_factor=self.cfg.stale_confidence_factor)
         facts = session_facts(session, fresh)
 
+        if rec:
+            rec.agent_label = persona.agent_label
+
         # ① 질문 등급 — 지식을 막아도 질문 문장이 기밀이면 그대로 새어 나간다
+        if rec:
+            rec.mark("classify")
         q_tier: TierDecision = await self.gatekeeper.classify(request.question)
 
         # 후보 중에서 고르고 그 파일만 읽는다 (전역 스캔 없음)
+        if rec:
+            rec.mark("select")
+        candidates = self.store.candidate_paths(session)
         paths = await self.store.select_paths(session, request.question)
         chunks = self.store.read(paths, target)
         chunks += self.store.verified_chunks(session)
@@ -518,16 +754,44 @@ class Orchestrator:
             if kb_chunk:
                 chunks = [kb_chunk]
             else:
+                if rec:
+                    rec.add_blocked(
+                        stage_id="select",
+                        reason="동원할 근거가 없다",
+                        detail=(
+                            "이 사람의 세션에서 질문과 관련된 문서를 찾지 못했다. "
+                            "경계 밖으로 나간 것이 없고, 신뢰 구역 안에서 답한다."
+                        ),
+                    )
+                    self._keep_trace(rec)
                 raise ExtractionFailed(f"{target} 의 세션에서 읽을 근거를 찾지 못했다")
 
         # ② 지식 등급 — `classified` 는 호출자가 준 리스트를 채운다.
         #    실패해도 폴백이 등급을 알 수 있어야 한다 (PrepareFailed 참조).
+        decisions: dict[str, TierDecision] = {}
         for chunk in chunks:
             if chunk.tier is not None:
                 classified.append(chunk)  # 승인된 QA — 등급이 이미 있다
                 continue
             decision = await self.gatekeeper.classify(chunk.text, chunk.internal_path)
+            decisions[chunk.chunk_id] = decision
             classified.append(chunk.model_copy(update={"tier": decision.tier}))
+
+        if rec:
+            evidence = self._evidence(classified, decisions)
+            effective = max(
+                [q_tier.tier, *[(c.tier or Tier.INTERNAL) for c in classified]],
+                default=q_tier.tier,
+            )
+            rec.add_select(
+                candidate_count=len(candidates),
+                evidence=evidence,
+                # 후보가 하나뿐이면 고를 것이 없다 — 모델을 부르지 않는다.
+                selected_by_model=len(candidates) > 1,
+            )
+            rec.add_classify(
+                question_decision=q_tier, evidence=evidence, effective=effective
+            )
 
         # 구조 추출 시도 — 실패 시 SECRET이 아니면 passthrough 경로로 전환
         try:
@@ -557,6 +821,23 @@ class Orchestrator:
             originals = tuple(c.text for c in classified)
             # passthrough는 간소화된 검증만 적용
             env = env.model_copy(update={"validation": passthrough_validation()})
+            preview = self.gatekeeper.preview(env, originals)
+
+            if rec:
+                rec.add_transform(
+                    env=env,
+                    mapping_table=dict(mapping.table),
+                    extraction_note=(
+                        "어휘 사전에 맞는 task 스키마가 없어 **슬롯 채우기를 건너뛰었다.** "
+                        "질문과 근거를 그대로 담되 등급이 사내면 식별자를 치환한다. "
+                        "⚠️ 이 경로는 기밀 등급에서 절대 쓰이지 않는다 — 기밀은 구조 추출이 "
+                        "성공해야만 나간다."
+                    ),
+                )
+                rec.add_validate(
+                    result=env.validation,
+                    verbatim_count=preview.verbatim_sentence_count,
+                )
 
             self.gatekeeper.cache.put(env, mapping, originals, target)
             pending.calls.append(
@@ -567,6 +848,7 @@ class Orchestrator:
                     session_facts=facts,
                     freshness=fresh,
                     confidence_factor=factor,
+                    trace=rec,
                 )
             )
 
@@ -586,7 +868,8 @@ class Orchestrator:
                     ),
                     tier=call.tier,
                     disposition="ready",
-                    preview=self.gatekeeper.preview(env, originals),
+                    preview=preview,
+                    trace_id=self._keep_trace(rec),
                 ),
                 tier_note,
             )
@@ -598,24 +881,64 @@ class Orchestrator:
         )
 
         # 구조 추출 시도 — 실패 시 SECRET이 아니면 passthrough 경로로 전환
+        if rec:
+            rec.mark("transform")
+        extraction_note = ""
         try:
             env, mapping = await self.gatekeeper.to_payload(call, classified, request.question)
         except ExtractionFailed:
             if call.tier is Tier.SECRET:
+                if rec:
+                    rec.add_blocked(
+                        stage_id="transform",
+                        reason="구조 추출 실패 — 기밀은 원문으로 나가지 않는다",
+                        detail=(
+                            "필수 슬롯을 어휘 사전 안의 값으로 채우지 못했다. 기밀 등급에서는 "
+                            "대체 경로가 없다 — 원문을 그대로 보내는 것이 유일한 대안인데 "
+                            "그것이 정확히 이 시스템이 막으려는 것이다 (fail closed)."
+                        ),
+                    )
+                    self._keep_trace(rec)
                 raise  # SECRET은 구조 추출 필수 — 원문 유출 방지
             # INTERNAL/OPEN: 구조 추출 없이 직접 전달
             log.info(
                 "구조 추출 실패 → passthrough 경로 전환",
                 extra=log_extra(target=target, tier=call.tier.value),
             )
+            extraction_note = (
+                "구조 추출이 실패해 passthrough 로 전환했다 — 슬롯을 어휘 사전 안의 값으로 "
+                "채우지 못했다는 뜻이다. 사내 등급이므로 식별자 치환을 거쳐 나간다. "
+                "⚠️ 기밀 등급이었다면 여기서 전송이 멈춘다."
+            )
             env, mapping = self.gatekeeper.to_payload_passthrough(
                 call, classified, request.question
             )
         originals = tuple(c.text for c in classified)
+        if rec:
+            rec.add_transform(
+                env=env, mapping_table=dict(mapping.table), extraction_note=extraction_note
+            )
+            rec.mark("validate")
         validation = self.gatekeeper.validate(env, originals)
         env = env.model_copy(update={"validation": validation})
+        preview = self.gatekeeper.preview(env, originals)
+
+        if rec:
+            rec.add_validate(
+                result=validation, verbatim_count=preview.verbatim_sentence_count
+            )
 
         if not validation.passed:
+            if rec:
+                rec.add_blocked(
+                    stage_id="dispatch",
+                    reason=f"검증 {validation.summary} — 전송하지 않았다",
+                    detail=(
+                        f"{validation.first_failed_stage} 단계에서 막혔다. 경계 밖으로 나간 "
+                        "것이 없으므로 감사 로그에도 레코드가 없다 — '없다'가 증거가 된다."
+                    ),
+                )
+                self._keep_trace(rec)
             raise ValidationBlocked(
                 f"검증 실패 ({validation.summary}, 단계={validation.first_failed_stage})"
             )
@@ -629,6 +952,7 @@ class Orchestrator:
                 session_facts=facts,
                 freshness=fresh,
                 confidence_factor=factor,
+                trace=rec,
             )
         )
 
@@ -642,7 +966,8 @@ class Orchestrator:
                 ),
                 tier=call.tier,
                 disposition="ready",
-                preview=self.gatekeeper.preview(env, originals),
+                preview=preview,
+                trace_id=self._keep_trace(rec),
             ),
             tier_note,
         )
@@ -660,6 +985,7 @@ class Orchestrator:
         """
         cause = error.error if isinstance(error, PrepareFailed) else error
         reason_code, label = _blocked_reason(cause)
+        rec = error.trace if isinstance(error, PrepareFailed) else None
 
         # 판정된 근거가 있으면 그것을 쓴다 (등급 표시가 정확해진다).
         chunks = list(error.chunks) if isinstance(error, PrepareFailed) else []
@@ -679,7 +1005,24 @@ class Orchestrator:
         fallback = await self.gatekeeper.answer_in_zone(
             request.question, chunks, tier_label=tier.label_ko, reason=reason_code
         )
+        if rec is not None:
+            fallback = fallback.model_copy(update={"trace_id": rec.trace_id})
         label_name = agent_cfg.to_persona().agent_label if agent_cfg else f"{target} 의 Agent"
+
+        if rec is not None:
+            rec.agent_label = rec.agent_label or label_name
+            # 이미 어느 단계가 "여기서 멈췄다" 를 적었으면 덧쓰지 않는다.
+            # 차단 사유가 두 개면 읽는 사람이 어느 것이 진짜인지 모른다.
+            if not rec.has_blocked:
+                rec.add_blocked(
+                    stage_id="dispatch",
+                    reason=label,
+                    detail=(
+                        f"{label} 경계 밖으로 나간 것이 없으므로 감사 로그에 레코드가 "
+                        "없다. 대신 신뢰 구역 안에서 아는 만큼 답했다."
+                    ),
+                )
+
         return PreparedCall(
             envelope_id=None,
             target_entity_id=target,
@@ -688,6 +1031,7 @@ class Orchestrator:
             disposition="blocked",
             fallback=fallback,
             blocked_reason=label,
+            trace_id=self._keep_trace(rec),
         )
 
     # ── send ─────────────────────────────────────────────────────────
@@ -872,22 +1216,69 @@ class Orchestrator:
             raise GatekeeperError(f"envelope 이 만료되었거나 이미 전송되었다: {call.envelope_id}")
 
         persona = self.data.agent(call.target_entity_id).to_persona()
+        rec = call.trace
+
+        # ⚠️ 매핑 사본. `finally` 가 원본을 비우기 전에 뜬다 (BR-G-06 은 지켜진다 —
+        #    원본은 예정대로 폐기된다). 이 사본은 이 함수 안에서만 살고 아래
+        #    `finally` 에서 지워진다. 트레이스에 담기는 것은 **답변에 실제로
+        #    등장한 기호**뿐이고 나머지는 건수만 센다 (`trace.mapping_rows`).
+        mapping_snapshot = dict(entry.mapping.table)
+
+        if rec:
+            rec.mark("dispatch")
+            rec.add_dispatch(
+                env=entry.envelope,
+                transport=self.cfg.agent_transport.value,
+                model_id=self.cfg.agent_model_id,
+                approved_by=approved_by,
+                endpoint=self._boundary_endpoint(),
+            )
         try:
             resp = await self.agent.ask(entry.envelope, persona, approved_by)
             answer = self.gatekeeper.rehydrate(
                 resp, entry.mapping, persona=persona, chunks=call.chunks
             )
+            if rec:
+                # 왼쪽(기호)과 오른쪽(복원)을 나란히 놓기 위해, 경계 밖 모델이
+                # 만든 그대로를 한 번 더 편다. **모델을 다시 부르지 않는다** —
+                # `answer_to_text` 는 순수 함수다.
+                rec.add_rehydrate(
+                    masked_text=answer_to_text(resp.answer),
+                    rehydrated_text=answer.text,
+                    mapping_table=mapping_snapshot,
+                    unresolved=answer.unresolved_refs,
+                    citations=answer.citations,
+                    confidence=answer.confidence,
+                )
         finally:
             # 재수화 실패 시에도 폐기한다 (BR-G-06, NFR-S-15)
             entry.mapping.table.clear()
+            mapping_snapshot.clear()
             self.gatekeeper.cache.discard(call.envelope_id)
+            self._keep_trace(rec)
 
         # 세션 신선도 보정. 여기서 적용해야 branch() 가 보정된 값을 본다
         answer = self._apply_freshness(answer, call)
+        if rec is not None:
+            answer = answer.model_copy(update={"trace_id": rec.trace_id})
         disposition = branch(
             [answer], auto=self.cfg.confidence_auto, escalate=self.cfg.confidence_escalate
         )
         return _CallOutcome(call, answer, entry.envelope, persona, disposition, resp)
+
+    def _boundary_endpoint(self) -> str:
+        """경계 밖으로 나갈 때 실제로 향하는 곳. **트레이스 표시용 문자열이다.**
+
+        비밀을 담지 않는다 — 브로커 URL 은 설정값이고 키는 여기 오지 않는다.
+        "어디로 갔나" 를 화면이 말할 수 없으면 경계를 보여준다는 주장이 빈다.
+        """
+        match self.cfg.agent_transport.value:
+            case "broker":
+                return self.cfg.broker_api_url or "(브로커 URL 미설정)"
+            case "direct":
+                return f"bedrock:{self.cfg.aws_region}"
+            case _:
+                return "(목업 — 녹화된 픽스처)"
 
     def _apply_freshness(self, answer: RehydratedAnswer, call: PendingCall) -> RehydratedAnswer:
         """`STALE` 보정 (x0.8) + 신선도 표기.

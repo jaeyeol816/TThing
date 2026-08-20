@@ -193,10 +193,37 @@ def test_health_reports_demo_now_override(client):
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_agents_lists_three(client):
+def test_agents_lists_everyone_in_config(client, wiring):
+    """목록은 `agents.yaml` 이 정한다 — 테스트가 인원을 손으로 적지 않는다.
+
+    적으면 사람을 한 명 추가할 때마다 여기도 고쳐야 하고, 그 순간
+    "추가는 항목 하나 더하는 것으로 끝난다"(FR-23) 가 거짓이 된다.
+    """
     cards = client.get("/api/agents").json()
-    assert {c["entity_id"] for c in cards} == {"person:kim", "person:park", "person:choi"}
+    assert {c["entity_id"] for c in cards} == set(wiring.data.agents)
     assert all(c["expertise"] for c in cards)
+
+
+def test_agent_cards_carry_org_coordinates(client, wiring):
+    """조직도 좌표가 카드에 실린다 — 화면이 트리를 그릴 수 있어야 한다."""
+    cards = {c["entity_id"]: c for c in client.get("/api/agents").json()}
+    placed = [eid for eid, a in wiring.data.agents.items() if a.org is not None]
+    assert placed, "데모 조직도에 배치된 사람이 없다"
+    for entity_id in placed:
+        card = cards[entity_id]
+        assert card["unit_id"], entity_id
+        assert card["unit_path"], entity_id
+        assert card["rank_label"], entity_id
+
+
+def test_agent_cards_survive_a_missing_org_chart(client, wiring, monkeypatch):
+    """조직도가 없어도 목록은 그대로 나온다 (표시용이므로 fail soft)."""
+    from mesh.org import OrgChart
+
+    monkeypatch.setattr(wiring.data, "org", OrgChart(), raising=False)
+    cards = client.get("/api/agents").json()
+    assert {c["entity_id"] for c in cards} == set(wiring.data.agents)
+    assert all(c["unit_id"] is None for c in cards)
 
 
 def test_agents_response_has_no_session_text(client):
@@ -220,6 +247,191 @@ def test_adding_an_agent_needs_no_code_change(client, wiring):
     )
     cards = client.get("/api/agents").json()
     assert "person:new" in {c["entity_id"] for c in cards}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# /api/org — 조직도
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_org_returns_a_tree_whose_depth_comes_from_the_file(client):
+    org = client.get("/api/org").json()
+    assert org["roots"], "조직도가 비어 있다"
+
+    # 층 이름이 응답에 있어야 화면이 하드코딩하지 않는다
+    labels = {k["label"] for k in org["unit_kinds"]}
+    assert labels, "unit_kinds 가 비어 있다"
+
+    def depth_of(unit):
+        return 1 + max((depth_of(c) for c in unit["children"]), default=0)
+
+    assert max(depth_of(r) for r in org["roots"]) >= 3, "본부→센터→팀이 그려져야 한다"
+
+
+def test_org_has_no_session_text(client):
+    """🔴 조직도는 인증 없이 보인다 (FR-31 과 같은 위험)."""
+    blob = client.get("/api/org").text
+    for leak in ("고객사 H", "H社", "REQ-4412", "CTR-204817", "atlas-ml", "corpus/"):
+        assert leak not in blob, leak
+
+
+def test_org_members_match_agent_cards(client, wiring):
+    """조직도의 사람과 카드 목록이 어긋나면 화면에 빈 자리가 생긴다."""
+    org = client.get("/api/org").json()
+
+    def ids(units):
+        out = []
+        for u in units:
+            out += u["member_ids"]
+            out += ids(u["children"])
+        return out
+
+    placed = set(ids(org["roots"])) | set(org["unplaced_member_ids"])
+    assert placed == {eid for eid, a in wiring.data.agents.items() if a.org is not None}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# /api/ask/broadcast — 지목보다 먼저 오는 단계
+# ══════════════════════════════════════════════════════════════════════
+
+
+def broadcast(client, question="라벨 불균형을 어떤 기법으로 처리했나요?", asker="person:jung"):
+    return client.post("/api/ask/broadcast", json={"question": question, "asker": asker})
+
+
+def test_broadcast_returns_everyone_with_a_verdict(client, wiring):
+    """관련 없는 사람도 목록에 남는다 — 지우면 되돌릴 대상이 없어진다."""
+    body = broadcast(client).json()
+    ids = {r["entity_id"] for r in body["results"]}
+    assert ids == set(wiring.data.agents) - {"person:jung"}
+    assert all(r["reason"] for r in body["results"])
+
+
+def test_broadcast_excludes_the_asker(client):
+    body = broadcast(client, asker="person:park").json()
+    assert "person:park" not in {r["entity_id"] for r in body["results"]}
+
+
+def test_broadcast_narrows_to_the_right_person(client):
+    body = broadcast(client).json()
+    relevant = [r["entity_id"] for r in body["results"] if r["relevant"]]
+    assert "person:park" in relevant, relevant
+    assert len(relevant) < len(body["results"]), "전원이 관련 있으면 좁힌 것이 아니다"
+
+
+def test_broadcast_never_crosses_the_boundary(client, wiring):
+    """🔴 이 왕복은 문서를 읽지 않고 Agent 를 부르지 않는다.
+
+    감사 레코드가 늘지 않는 것이 그 증거다 — 나간 것이 없으면 기록할 것도 없다.
+    """
+    before = wiring.audit.count()
+    body = broadcast(client).json()
+    assert body["crossed_boundary"] is False
+    assert wiring.audit.count() == before
+    assert wiring.fake_broker.calls == [], "경계 밖 Agent 를 불렀다"
+
+
+def test_broadcast_response_has_no_document_text(client):
+    blob = broadcast(client).text
+    for leak in NEVER_IN_RESPONSE + ("전처리 v3", "재학습", "레거시 SSO"):
+        assert leak not in blob, leak
+
+
+def test_broadcast_survives_a_dead_selection_model(client, wiring):
+    """선별 모델이 죽어도 규칙만으로 좁힌다 — 질문 자체가 막히면 안 된다."""
+    from mesh.exceptions import ExaoneUnavailable
+
+    wiring.fake_exaone.fail["triage"] = ExaoneUnavailable("타임아웃")
+    body = broadcast(client).json()
+    assert body["model_used"] is False
+    assert body["model_note"]
+    assert any(r["relevant"] for r in body["results"])
+
+
+def test_broadcast_rejects_a_blank_question(client):
+    r = client.post("/api/ask/broadcast", json={"question": "   ", "asker": "person:jung"})
+    assert r.status_code == 422
+
+
+# ══════════════════════════════════════════════════════════════════════
+# /api/trace — 처리 경과
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_prepare_hands_back_a_trace_id(client):
+    call = prepare(client).json()["calls"][0]
+    assert call["trace_id"], "말풍선이 경과를 열 열쇠가 없다"
+
+
+def test_trace_shows_the_stages_that_actually_ran(client):
+    call = prepare(client).json()["calls"][0]
+    trace = client.get(f"/api/trace/{call['trace_id']}").json()
+    stage_ids = [s["stage_id"] for s in trace["stages"]]
+    assert stage_ids[:2] == ["classify", "select"]
+    assert "transform" in stage_ids
+    assert trace["crossed_boundary"] is False, "prepare 는 아직 경계를 넘지 않았다"
+
+
+def test_trace_gains_dispatch_and_rehydrate_after_send(client):
+    prepared = prepare(client).json()
+    call = prepared["calls"][0]
+    if call["disposition"] != "ready":
+        pytest.skip("이 질문이 차단됐다 — 다른 테스트가 차단 경로를 본다")
+
+    result = client.post(
+        "/api/ask/send",
+        json={
+            "request_id": prepared["request_id"],
+            "envelope_ids": [call["envelope_id"]],
+            "approved_by": "person:lee",
+        },
+    ).json()
+    answer = result["merged"]["answers"][0]
+    assert answer["trace_id"] == call["trace_id"], "같은 질의는 같은 경과다"
+
+    trace = client.get(f"/api/trace/{answer['trace_id']}").json()
+    stage_ids = [s["stage_id"] for s in trace["stages"]]
+    assert stage_ids == ["classify", "select", "transform", "validate", "dispatch", "rehydrate"]
+    assert trace["crossed_boundary"] is True
+
+    dispatch = next(s for s in trace["stages"] if s["stage_id"] == "dispatch")
+    assert dispatch["crosses_boundary"] is True
+
+    rehydrate = next(s for s in trace["stages"] if s["stage_id"] == "rehydrate")
+    compare = [p for p in rehydrate["panels"] if p["kind"] == "compare"]
+    assert compare, "기호 답변 ↔ 복원 답변 비교가 없다"
+    assert compare[0]["before_text"] is not None
+    assert compare[0]["after_text"] is not None
+
+
+def test_trace_carries_the_payload_that_crossed(client):
+    """경계를 넘은 그 JSON 전문을 볼 수 있어야 한다 (BR-U-01 과 같은 이유)."""
+    import json as _json
+
+    call = prepare(client).json()["calls"][0]
+    trace = client.get(f"/api/trace/{call['trace_id']}").json()
+    transform = next(s for s in trace["stages"] if s["stage_id"] == "transform")
+    payload_panel = next(p for p in transform["panels"] if p["kind"] == "json")
+    assert _json.loads(payload_panel["json_text"]) == _json.loads(
+        call["preview"]["payload_pretty"]
+    ), "트레이스와 미리보기가 다른 것을 보여주면 안 된다"
+
+
+def test_trace_has_no_internal_paths_or_rule_values(client):
+    """🔴 트레이스는 "왜 기밀인가" 에 답하되 **무엇과 일치했는가**는 말하지 않는다.
+
+    등급 판정 사유(`TierDecision.reasons`)에는 매치된 glob 과 금칙어 리터럴이
+    그대로 들어 있다 — 서버 로그용 문자열이기 때문이다. 그것을 화면에 그대로
+    실으면 트레이스가 유출 채널이 된다 (`trace.redact_reasons`).
+    """
+    call = prepare(client).json()["calls"][0]
+    blob = client.get(f"/api/trace/{call['trace_id']}").text
+    for leak in (*NEVER_IN_RESPONSE, "person_kim/", "customer-H", "하나텔", "data/docs/"):
+        assert leak not in blob, leak
+
+
+def test_unknown_trace_is_404(client):
+    assert client.get("/api/trace/tr_nope").status_code == 404
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -766,12 +978,11 @@ def test_uploaded_secret_never_reaches_the_payload(client):
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_users_lists_switchable_people(client):
+def test_users_lists_switchable_people(client, wiring):
     r = client.get("/api/users")
     assert r.status_code == 200
     users = r.json()
-    assert len(users) == 3
-    assert {u["entity_id"] for u in users} == {"person:kim", "person:park", "person:choi"}
+    assert {u["entity_id"] for u in users} == set(wiring.data.agents)
     for u in users:
         assert u["display_name"]
 

@@ -680,6 +680,12 @@ class RehydratedAnswer(BaseModel):
     freshness: Freshness | None = None
     session_as_of: datetime | None = None
     unresolved_refs: tuple[str, ...] = ()  # 매핑에 없어 치환 못 한 ref (BR-G-10)
+    #: 이 답변이 어떻게 만들어졌는지의 기록 (`GET /api/trace/{trace_id}`).
+    #:
+    #: 답변 자체가 열쇠를 들고 다니는 이유: 화면이 말풍선과 경과를 짝지을 때
+    #: 대상·순서로 추측하지 않아도 된다. `None` 이면 기록이 없거나 만료된
+    #: 것이고, 그때 화면은 경과 버튼을 그리지 않는다.
+    trace_id: str | None = None
 
 
 class EscalationDraft(BaseModel):
@@ -830,6 +836,24 @@ class Session(BaseModel):
     verified_qa: tuple[VerifiedQA, ...] = ()
 
 
+class OrgPlacement(BaseModel):
+    """사람이 조직도의 어느 자리에 있는가 (`AgentConfig.org`).
+
+    ⚠️ 자리를 **문자열 id 로만** 참조한다 (`unit`, `rank`). 여기에 본부·팀
+       이름을 직접 적지 않는 이유는 조직 개편 때 `agents.yaml` 의 10줄이
+       아니라 `org.yaml` 의 1줄만 바뀌게 하기 위해서다.
+
+    `title` 은 직급과 별개인 역할 표기다 ("인증 아키텍트"). 비워 두면
+    화면이 직급만 그린다.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    unit: str
+    rank: str
+    title: str = ""
+
+
 class Disclose(BaseModel):
     """무엇을 공개할지. 본인이 정한다 (Round 2 Q13).
 
@@ -859,6 +883,12 @@ class AgentConfig(BaseModel):
     escalation_inbox: str
     daily_limit: int = 50
     disclose: Disclose = Disclose()
+    #: 조직도의 자리. `None` 이면 트리에 그리지 않고 "미배치" 로 뺀다 —
+    #: 조용히 사라지는 것보다 눈에 띄는 편이 낫다.
+    org: OrgPlacement | None = None
+    #: 브로드캐스트 판정이 참고할 키워드. 본인이 적는다. 비워도 동작하며
+    #: 그때는 `expertise` 문장만으로 판정한다 (BR-T-02).
+    topics: tuple[str, ...] = ()
 
     def to_persona(self) -> Persona:
         return Persona(
@@ -902,3 +932,14 @@ class AgentCard(BaseModel):
     #: 값을 채우는 곳은 **그 노드의 `/api/peer/agents` 라우트**다. 질문자 쪽에서
     #: 채우면 URL 밖에 모르고, 사람이 읽을 이름이 필요하다.
     node_name: str | None = None
+
+    #: ── 조직도 좌표 ──────────────────────────────────────────────
+    #: `org.yaml` 이 없거나 자리를 못 찾으면 전부 None 이고, 화면은 평평한
+    #: 목록을 그린다. 조직도는 표시용이므로 없다고 질의가 막히지 않는다.
+    unit_id: str | None = None
+    unit_path: tuple[str, ...] = ()
+    rank_id: str | None = None
+    rank_label: str | None = None
+    rank_badge: str | None = None
+    rank_order: int | None = None
+    org_title: str | None = None

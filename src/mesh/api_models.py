@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from mesh.org import OrgChartView
 from mesh.schemas import (
     ENTITY_ID_PATTERN,
     ENVELOPE_ID_PATTERN,
@@ -99,6 +100,10 @@ class PreparedCall(BaseModel):
     preview: PreviewCard | None = None
     fallback: RehydratedAnswer | None = None
     blocked_reason: str | None = None
+    #: 처리 경과를 열어 볼 수 있는 열쇠 (`GET /api/trace/{trace_id}`).
+    #: `None` 이면 기록에 실패한 것이고, 그때도 답변은 정상으로 나온다 —
+    #: 트레이스는 설명이지 기능이 아니다.
+    trace_id: str | None = None
 
     @model_validator(mode="after")
     def _shape_matches_disposition(self) -> PreparedCall:
@@ -315,6 +320,123 @@ class AgentCardView(BaseModel):
     #: 질문을 보내고 있다는 사실을 모르면 안 된다 — 답변에는 재수화된 실제
     #: 이름이 들어오고, 그것이 LAN 을 건너온 것이기 때문이다.
     node_name: str | None = None
+
+    # ── 조직도 좌표 ──────────────────────────────────────────────
+    #: 전부 `None`/빈 값이면 조직도에 자리가 없다는 뜻이고, 화면은 그 사람을
+    #: "미배치" 묶음에 그린다. 조직도가 아예 없어도 목록은 그대로 동작한다.
+    unit_id: str | None = None
+    unit_path: tuple[str, ...] = ()
+    rank_id: str | None = None
+    rank_label: str | None = None
+    rank_badge: str | None = None
+    rank_order: int | None = None
+    org_title: str | None = None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 조직도 (`GET /api/org`)
+# ══════════════════════════════════════════════════════════════════════
+#
+# 구조 자체는 `mesh.org` 가 정의한다. 여기서 다시 선언하지 않고 그대로
+# 내보내는 이유: 두 곳에 같은 모양을 적으면 한쪽만 고쳐지는 날이 온다.
+#
+# ⚠️ 이 응답은 **인증 없이 보인다.** `org.yaml` 의 문자열이 그대로 나가므로
+#    로드 시점에 금칙어를 검사한다 (`OrgChart.validate_no_banned`).
+
+
+class OrgChartResponse(OrgChartView):
+    """`GET /api/org`. `OrgChartView` 를 그대로 쓴다.
+
+    사람의 이름·직급은 여기 없다 — `member_ids` 만 있고 표시에 필요한 것은
+    `GET /api/agents` 가 준다. 두 응답이 각자 자기 것만 말하게 해서,
+    "조직도에는 있는데 카드에는 없는 사람" 같은 상태를 화면이 감지할 수 있다.
+    """
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 브로드캐스트 (`POST /api/ask/broadcast`)
+# ══════════════════════════════════════════════════════════════════════
+#
+# ⚠️ **이 왕복은 경계를 넘지 않는다.** 문서를 읽지 않고, 경계 밖 Agent 를
+#    부르지 않으며, 감사 레코드를 만들지 않는다. 판정 재료는 전부 이미
+#    인증 없이 보이는 값이다 (`mesh.triage` 파일 머리말 참조).
+#
+#    그래서 `agents_notified` 같은 필드가 여기 없다 — 알릴 사람이 없다.
+
+
+class BroadcastRequest(BaseModel):
+    """질문 하나를 전원에게 뿌린다. **지목이 없다.**"""
+
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    asker: str = Field(pattern=ENTITY_ID_PATTERN)
+    #: 후보로 남길 최대 인원. 화면이 한 번에 다룰 수 있는 수를 넘기지 않는다.
+    max_relevant: int = Field(default=6, ge=1, le=20)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("질문이 비어 있다")
+        return v
+
+
+class AgentRelevanceView(BaseModel):
+    """브로드캐스트를 받은 한 명의 판정 결과.
+
+    ⚠️ `reason` 은 **코드가 조립한 문장**이다 (`triage.REASON_TEMPLATES`).
+       모델이 쓴 자유 문장이 아니다 — 그것을 허용하면 판정 결과에 원문이
+       섞여 나올 채널이 생긴다.
+    """
+
+    entity_id: str = Field(pattern=ENTITY_ID_PATTERN)
+    display_name: str
+    relevant: bool
+    score: float = 0.0
+    reason_code: str = "no_match"
+    reason: str = ""
+    matched: tuple[str, ...] = ()
+    decided_by: Literal["rule", "model", "rule+model"] = "rule"
+    #: 지금 질문을 받을 수 없는 상태 (일일 한도 초과 등). 화면이 이유를 밝힌다.
+    available: bool = True
+    unavailable_reason: str | None = None
+
+
+class BroadcastResult(BaseModel):
+    """`POST /api/ask/broadcast` 응답.
+
+    `results` 는 **전원**을 담는다. 관련 없는 사람을 목록에서 지우지 않는
+    이유: 화면이 "관련 없음으로 판정돼 흐려졌다" 를 보여줘야 사용자가
+    판정이 틀렸을 때 되돌릴 수 있다. 지워 버리면 되돌릴 대상이 없다.
+    """
+
+    broadcast_id: str
+    question: str
+    results: tuple[AgentRelevanceView, ...] = ()
+    threshold: float = 0.5
+    #: 선별 모델이 실제로 돌았는가. 규칙만으로 좁힌 것과 구분해 표시한다.
+    model_used: bool = False
+    model_note: str | None = None
+    elapsed_seconds: float = 0.0
+
+    #: ⚠️ 타입으로 못 박은 약속. 브로드캐스트는 경계를 넘지 않는다.
+    crossed_boundary: Literal[False] = False
+
+    @property
+    def relevant_ids(self) -> tuple[str, ...]:
+        return tuple(r.entity_id for r in self.results if r.relevant)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 게이트키퍼 트레이스 (`GET /api/trace/{trace_id}`)
+# ══════════════════════════════════════════════════════════════════════
+#
+# ⚠️ 여기에 `TraceResponse` 를 두지 않는다. `mesh.trace` 는 이 모듈과 같은
+#    층(L1 지원)이고, 같은 층끼리의 의존은 금지돼 있다
+#    (`tests/unit/test_import_boundary.py::test_dependencies_flow_downward_only`).
+#
+#    래퍼를 하나 만들자고 레이어 규칙에 예외를 내는 것은 교환비가 나쁘다.
+#    라우트가 `mesh.trace.GatekeeperTrace` 를 그대로 `response_model` 로 쓴다 —
+#    `main`(L7)에서 L1 을 보는 것은 정방향이다.
 
 
 class HealthStatus(BaseModel):

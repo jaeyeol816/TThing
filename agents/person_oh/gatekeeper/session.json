@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:oh",
+  "updated_at": "2026-08-19T14:26:00+09:00",
+  "focus": "팀 간 데이터 계약 v2 합의",
+  "summary": "파이프라인 산출물의 스키마 변경 통보 절차와 호환성 보장 기간을 정하는 중",
+  "open_paths": [
+    "person_oh/data/docs/data-contract-v2.md",
+    "person_oh/data/minutes/2026-08-12-schema-change.md"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_oh/data/docs/data-contract-v2.md",
+      "at": "2026-08-19T14:11:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

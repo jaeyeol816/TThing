@@ -10,7 +10,10 @@
 
 <div class="app-layout">
 
-  <!-- ── 중앙: 채팅 영역 ─────────────────────────────────────────── -->
+  <!-- ── 좌측: 대화 영역 ─────────────────────────────────────────────
+       사람마다 스레드가 따로 있다. 브로드캐스트로 후보가 좁혀지고,
+       사람을 누르면 그 사람과의 스레드가 여기 열린다.
+       ──────────────────────────────────────────────────────────── -->
   <main class="chat-area">
     <header class="chat-header">
       <div class="brand">
@@ -28,13 +31,22 @@
       </button>
     </header>
 
+    <!-- 지금 누구와 이야기하고 있는가. 브로드캐스트 중에는 상태를 표시한다. -->
+    <div class="thread-bar" id="thread-bar" aria-live="polite">
+      <div class="thread-who" id="thread-who">
+        <span class="thread-title">전체에게 묻기</span>
+        <span class="thread-sub">질문을 보내면 모든 사람의 Agent 가 먼저 판단합니다</span>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="thread-back" hidden>← 전체에게 묻기</button>
+    </div>
+
     <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
     </div>
 
     <div class="chat-input-area">
       <div class="input-wrapper">
         <label class="sr-only" for="message-input">메시지 입력</label>
-        <textarea id="message-input" rows="1" placeholder="메시지를 입력하세요..."
+        <textarea id="message-input" rows="1" placeholder="질문을 입력하세요 — 답할 수 있는 사람을 찾아드립니다"
                   data-testid="message-input"></textarea>
         <button type="button" class="send-btn" id="send-btn" data-testid="send-btn" disabled
                 aria-label="전송">
@@ -43,18 +55,31 @@
           </svg>
         </button>
       </div>
-      <p class="input-hint">Enter 전송 · Shift+Enter 줄바꿈</p>
+      <p class="input-hint" id="input-hint">Enter 전송 · Shift+Enter 줄바꿈</p>
     </div>
   </main>
 
-  <!-- ── 우측: 조직도 패널 ───────────────────────────────────────── -->
-  <aside class="org-panel">
+  <!-- ── 우측: 조직도 ────────────────────────────────────────────────
+       본부 → 센터/연구소 → 팀 → 사람. 깊이는 config/org.yaml 이 정하고
+       이 화면은 재귀로 그린다 — 층 이름을 하나도 알지 못한다.
+       ──────────────────────────────────────────────────────────── -->
+  <aside class="org-panel" id="org-panel">
     <div class="org-header">
       <h2 class="org-title">조직도</h2>
-      <span class="org-subtitle">질문할 대상을 선택하세요</span>
+      <span class="org-subtitle" id="org-subtitle">질문을 보내면 답할 수 있는 사람이 남습니다</span>
+      <div class="org-actions">
+        <button type="button" class="btn btn-ghost btn-sm" id="org-reset" hidden>전체 보기</button>
+      </div>
     </div>
 
-    <div class="org-list" id="org-list" data-testid="org-list">
+    <!-- 브로드캐스트 파동. JS 가 클래스를 켜고 끈다 (CSS 애니메이션). -->
+    <div class="broadcast-wave" id="broadcast-wave" aria-hidden="true">
+      <span class="ring ring-1"></span>
+      <span class="ring ring-2"></span>
+      <span class="ring ring-3"></span>
+    </div>
+
+    <div class="org-tree" id="org-tree" data-testid="org-list">
       <!-- JS가 채운다 -->
     </div>
 
@@ -62,7 +87,7 @@
       <div class="whoami">
         <label class="whoami-label" for="user-select">현재 사용자</label>
         <select id="user-select" data-testid="user-select"></select>
-        <span class="whoami-note">데모용 전환</span>
+        <span class="whoami-note">데모용 전환 · 인증이 아닙니다</span>
       </div>
     </div>
   </aside>
@@ -201,6 +226,34 @@
       </form>
     </div>
 
+  </div>
+</dialog>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     게이트키퍼 처리 경과 (트레이스)
+
+     말풍선 아래 한 줄이던 "Gatekeeper: 통과" 를 단계별로 열어 보는 곳이다.
+     단계가 곧 탭이고, 탭을 누르면 그 단계가 **실제로 손에 쥐고 있던 자료**가
+     아래에 열린다 — 표 · 경계를 넘은 JSON 전문 · 기호 답변과 복원 답변의 비교.
+
+     모달로 만든 이유: JSON 전문과 좌우 비교는 말풍선 폭에서 읽히지 않는다.
+     전문을 보여준다면서 좁은 칸에 밀어 넣는 것은 접어 두는 것과 다르지 않다.
+     ══════════════════════════════════════════════════════════════════ -->
+<dialog id="trace-modal" data-testid="trace-modal" aria-labelledby="trace-modal-title">
+  <div class="trace-modal-layout">
+    <header class="modal-head trace-modal-head">
+      <div>
+        <h2 id="trace-modal-title">게이트키퍼 처리 경과</h2>
+        <p class="modal-sub" id="trace-modal-sub"></p>
+      </div>
+      <button type="button" class="btn btn-ghost modal-close-btn" id="trace-modal-close"
+              aria-label="닫기">✕</button>
+    </header>
+
+    <div class="trace-tabs" id="trace-tabs" role="tablist" aria-label="처리 단계"></div>
+
+    <div class="trace-panels" id="trace-panels" role="tabpanel" tabindex="0" aria-live="polite">
+    </div>
   </div>
 </dialog>
 

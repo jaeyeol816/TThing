@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:jung",
+  "updated_at": "2026-08-19T14:28:00+09:00",
+  "focus": "인증 플랫폼 2026 하반기 로드맵 확정",
+  "summary": "세션 바인딩 도입 시점과 IdP 연동 범위를 로드맵 상 어느 분기에 넣을지 조율 중",
+  "open_paths": [
+    "person_jung/data/docs/auth-platform-roadmap-2026h2.md",
+    "person_jung/data/minutes/2026-08-14-roadmap-review.md"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_jung/data/docs/auth-platform-roadmap-2026h2.md",
+      "at": "2026-08-19T13:55:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

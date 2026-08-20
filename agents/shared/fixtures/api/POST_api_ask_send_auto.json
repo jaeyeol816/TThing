@@ -29,7 +29,8 @@
         "used_external_agent": true,
         "freshness": "live",
         "session_as_of": "2026-08-19T14:31:20+09:00",
-        "unresolved_refs": []
+        "unresolved_refs": [],
+        "trace_id": null
       }
     ],
     "divergent": false,
