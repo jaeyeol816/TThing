@@ -16,7 +16,6 @@ from mesh.config import (
     RedactingFilter,
     correlation_id,
     load_agents,
-    normalize_text,
     safe_resolve,
     sha256_canonical,
     to_relative,
@@ -315,20 +314,6 @@ def test_sha256_canonical_detects_change():
     a = {"max_session_hours": 8}
     b = {"max_session_hours": 9}
     assert sha256_canonical(a) != sha256_canonical(b)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# normalize_text — 5-gram 대조의 전처리
-# ══════════════════════════════════════════════════════════════════════
-
-
-def test_normalize_collapses_whitespace_and_lowercases():
-    assert normalize_text("  Session   Binding\n\tREQUIRED ") == "session binding required"
-
-
-def test_normalize_defeats_whitespace_evasion():
-    """공백만 바꿔 5-gram 대조를 우회하려는 시도를 막는다."""
-    assert normalize_text("a b c d e") == normalize_text("a  b\nc\td   e")
 
 
 # ══════════════════════════════════════════════════════════════════════

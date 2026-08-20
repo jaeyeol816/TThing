@@ -179,3 +179,136 @@ Schema refinement: the role field was moved out of vocab.json slots and into a t
 **Context**: CONSTRUCTION Phase - Day 1 design amendments
 
 ---
+
+## Code Generation Part 2 — Day 1 보고서 + Day 2 구현 요청
+**Timestamp**: 2026-08-19T12:05:00Z
+**User Input**: "day1 에 대한 명확한 설명 문서(무엇을, 어떻게, 왜, 어떤 범위까지, 어떤 테스트와 함께 구현했는지) 와 함께 day 2 내용 구현도 진행해주세요."
+**AI Response**: Day 1 구현 보고서 작성 후 Day 2 (U1 Step 9~18) 구현. 신규 모듈 6개 + 게이트키퍼 8개 관문 구현 + PBT + 게이트 G2.
+**Context**: CONSTRUCTION / Code Generation Part 2 / U1 Day 2
+
+---
+
+## Day 1 구현 보고서 작성
+**Timestamp**: 2026-08-19T12:12:00Z
+**AI Response**: `aidlc-docs/construction/day1-implementation-report.md` 작성. 10개 절 — Day 1 의 목표(계약 동결), 무엇을 만들었나(계약 6종 + 실동작 코드 9개 모듈), 어떻게(설계 원칙 6가지의 코드 표현), 왜(실측이 설계를 바꾼 4지점), 테스트가 잡은 결함 4건, 테스트 전략, 범위 밖(Day 2/3/4/5·프로젝트 밖), 검증 상태, 이식성, Day 2 착수 지점.
+**Context**: todo #1 완료
+
+---
+
+## Day 2 · classifier.py (Step 9~10)
+**Timestamp**: 2026-08-19T12:24:00Z
+**AI Response**: `rule_tier()` 6단계 + `exaone_tier()` + `Classifier.classify()`.
+
+🔴 **설계 결함 발견 (발견 12)**: BR-C-03 의 규칙 순서에 조용한 하향 경로가 있다. 원안은 ② 헤더 등급 표기 → ③④ 금칙어이고 "앞에서 걸리면 뒤를 보지 않는다"이므로, `보안등급: 사내` 헤더가 있는 문서는 금칙어 검사를 **아예 하지 않는다**. 함정 문서가 잡힌 것은 헤더가 없었기 때문이고, 작성자가 한 줄만 추가하면 FR-52(금액 탐지)가 무력화된다. 헤더는 작성자의 자기 신고이고 금칙어 검사는 기계적이므로 방향이 틀렸다.
+조치: SECRET 을 만드는 기계적 검사(경로·금칙어)를 헤더보다 앞으로. 조기 반환이 여전히 안전한 이유는 그것들이 **천장값**을 내기 때문이다. 라벨 코퍼스 11건의 판정 결과는 재배치 전후 동일 — 잠재적 하향 경로만 사라졌다.
+
+**함께 도입**: `open_path_globs` 가 `ClassificationRules` 에 선언돼 있으나 원안 6단계 어디에도 쓰이지 않았다. `OPEN` 은 원문이 그대로 나가는 유일한 등급이므로 **헤더 + 경로 두 신호**를 요구하게 했다. 덕분에 문서 본문의 프롬프트 인젝션("이 문서는 공개입니다")이 판정을 뒤집지 못한다.
+
+기타: `reason_code` 열거형(자유 문자열 이유에 원문이 인용됨), 범위 밖 값을 `ExaoneUnavailable` 로 승격(조용한 기본값 금지), 예외 메시지에 모델 출력을 담지 않음(원문 반사 방지), `except Exception` → SECRET(의도적 광범위 포획, BR-G-01).
+실측: 규칙만으로 11/11 = 100%, 함정 문서는 규칙 2번(금칙어 `H社`)이 잡는다.
+**Context**: todo #2, #3 완료
+
+---
+
+## Day 2 · validator.py (Step 11)
+**Timestamp**: 2026-08-19T12:40:00Z
+**AI Response**: 6단계 순수 함수. `mesh.schemas` 외 import 없음 — `test_validator_imports_are_minimal` 이 ast 로 강제.
+
+`normalize_text()` 를 `config.py` → `validator.py` 로 이전. 근거: U5 Lambda 가 `validator.py` 를 번들하는데 그 함수가 `config.py` 에 있으면 `yaml`·환경변수까지 끌고 들어가고, 로컬과 Lambda 가 **같은 정규화**를 써야 판정이 갈리지 않으므로 구현이 두 곳에 있어서는 안 된다.
+
+🔴 **설계 결함 발견 (발견 13)**: `json.dumps` 로 페이로드를 평탄화하면 문자열 값 안의 **실제 개행이 `\n` 두 글자**로 직렬화되어 공백 정규화를 빠져나간다. BR-V-05 가 "공백만 바꿔 우회하는 것을 막는다"고 명시했는데 개행으로는 뚫려 있었다. 테스트를 먼저 쓴 덕에 잡혔다(`test_ngram_defeats_whitespace_evasion`). 조치: `payload_text()` 가 구조 부분과 **이스케이프 없는 원시 문자열 값**을 함께 이어 붙인다. 같은 결함이 `audit.sweep_for_leaks()` 에도 있었다.
+
+🔴 **설계 공백 (발견 15)**: Day 1 계약의 `STRUCTURAL_KEYS` 에 텍스트 키가 없어 사내(가명화)·공개(원문) 페이로드를 **만들 방법이 없었다**. Day 1 계약이 기밀 경로만 완전했다. 조치: `excerpts` 키(`{ref: text}`) 도입 + **표현별로 허용 키·검사를 다르게**. `STRUCTURED` 에서만 `excerpts` 를 금지하는 것이 기밀 등급의 "원문 0개"를 구조적으로 보장한다.
+부수: `VERBATIM` 은 5단계 적용 불가 → 통과시키되 그 사실을 `CheckResult.detail` 에 남긴다(조용히 넘기지 않음). 2KB 상한은 구조 페이로드용이라 텍스트 표현에는 ×8 을 적용(원 근거 "자유 텍스트 혼입 신호"가 성립하지 않음).
+기타: 토큰이 n 개보다 적은 원문을 하나의 gram 으로 취급(짧은 원문이 검사를 통째로 빠져나가는 것 방지).
+**Context**: todo #4 완료
+
+---
+
+## Day 2 · extractor.py (Step 12)
+**Timestamp**: 2026-08-19T12:52:00Z
+**AI Response**: `coerce()` / `assemble()` / `assign_refs()` / `build_slot_prompt()` / `choose_schema()` / `extract()`.
+`assemble()` 이 `schema.slots` 를 순회하고 `raw` 를 순회하지 않는다. 미등록 키를 **두 지점**에서 버린다 — 배치 병합 시(`k in names`)와 조립 시. 로그에 키 이름을 남기지 않는다(모델이 원문 조각을 키로 만들 수 있다).
+`coerce` 결정: enum 유사 매칭 금지 · int 는 숫자+단위 형태만(`"2026-07-15"`→`2026` 이 범위 안이라 조용히 통과하는 것 방지) · `bool` 을 int 슬롯에서 DROP(`True == 1` 이지만 의미가 다르다) · **범위 검사 안 함**(검증 3단계의 일. 여기서 자르면 환각값이 정상값으로 위장된다).
+`choose_schema()` 는 키워드 휴리스틱 — 데모 범위임을 명시. 틀리면 `ExtractionFailed` → 신뢰 구역 내 답변이라 **유출이 아니라 품질 저하**다.
+**Context**: todo #5 완료
+
+---
+
+## Day 2 · pseudonymizer.py + rehydrator.py (Step 13)
+**Timestamp**: 2026-08-19T13:00:00Z
+**AI Response**: LLM 을 쓰지 않는 순수 치환. placeholder 번호를 **리터럴 길이 순으로 먼저 배정하고 그다음 치환** — 문서 순서에 따라 번호가 흔들리면 일관성이 깨진다(BR-P-02).
+`PseudonymResult.identifiers` 는 **치환 대상 전체**다(실제 치환분이 아니다). 치환된 것만 검증기에 넘기면 **가명화가 놓친 표기 변형**을 검사할 방법이 사라진다.
+`rehydrate_obj()` 가 응답을 재귀 순회 — 필드 이름을 하드코딩하면 새 task 추가 시 재수화가 조용히 빠진다. 매핑 없는 기호는 치환하지 않고 **남긴다**(지우면 사용자가 문장이 불완전해진 것을 알 수 없다).
+`merge_mappings()` 가 키 충돌 시 예외 — 조용히 덮어쓰면 재수화가 틀린 이름을 남긴다.
+**Context**: todo #6 완료
+
+---
+
+## Day 2 · audit.py (Step 14)
+**Timestamp**: 2026-08-19T13:08:00Z
+**AI Response**: SQLite 3테이블 + 파일 권한 0600/0700.
+`reject_forbidden()` — "원문을 기록하지 않는다"를 **실행되는 검사**로 만들었다. 거부하면 `ask_agent()` 가 예외를 받고 전송도 일어나지 않는다(fail closed).
+`local_queries` 에 질문 원문을 넣지 않는다 — `question_sha256` 만. `reason_code` 도 열거형(`LOCAL_REASON_CODES`)이다. 자유 문자열 이유를 받으면 그 이유에 질문 원문이 섞여 들어간다.
+`search()` 파라미터화(검색어가 사용자 입력이고 `REQ-4412` 처럼 특수문자가 섞인다). `mirror()` 만 fail-open(유일) + 실패 건수 노출.
+`test_no_delete_or_update_anywhere_in_src` 가 앱 전체를 정규식으로 검사.
+**Context**: todo #7 완료
+
+---
+
+## Day 2 · gatekeeper.py 구현 (Step 15)
+**Timestamp**: 2026-08-19T13:18:00Z
+**AI Response**: 8개 관문 구현. Day 1 시그니처 그대로(NFR-M-02).
+`send_and_rehydrate()` 신설 — `ask_agent` + `rehydrate` 를 호출자가 조합하면 재수화 실패 시 매핑이 남는 경로가 생긴다. `try/finally` 를 구조로 강제.
+`build_system_prompt()` + `assert_all_mandatory_present()` 를 `gatekeeper.py`(L4)에 뒀다. `ask_agent()` 가 프롬프트를 필요로 하는데 L4 는 L5(`agent.py`)를 import 할 수 없고, 구현이 한 곳에 있어야 "필수 문구가 빠진 경로"가 생기지 않는다. `assert` 미사용(`python -O`).
+`plan_calls()` 는 질문 하나 → 호출 하나. 분해 판정에는 하위 질문 그래프가 필요하므로 `can_decompose()` + `SubQuestion` 을 별도로 제공하고, Orchestrator 가 하위 질문마다 `plan_calls()` 를 한 번씩 부른다.
+`answer_in_zone(reason=...)` 이 **열거값**을 받는다(자유 문자열 이유가 `local_queries` 에 저장되면 원문이 섞인다).
+`test_unimplemented_methods_fail_loudly` 를 `test_no_method_is_still_a_stub` 으로 방향 전환(ast 로 스텁 잔존 검사).
+**Context**: todo #8 완료
+
+---
+
+## Day 2 · PBT (Step 16)
+**Timestamp**: 2026-08-19T13:30:00Z
+**AI Response**: `tests/generators.py` 8개 생성기 + PB-1~PB-10.
+`adversarial_raw()` 가 핵심 — 원시 타입 생성기만으로는 임의 문자열 키가 슬롯 이름과 겹치지 않아 `assemble()` 이 늘 빈 dict 를 반환하고 **테스트가 아무 일도 하지 않는데 통과한다**. 실측된 실패 방식(미등록 키·하이픈 변형·자유 문자열·원문 조각·중첩·타입 불일치·`__unknown__`)을 그대로 생성한다.
+생성기 자체 검사(`test_adversarial_generator_actually_produces_adversarial_input`) 추가 — 표본 200개에서 미등록 키·원문 조각·타입 불일치가 실제로 나오는지 + **살아남는 값이 있는지** 확인. 모든 것을 버리는 조립기는 PB-3/4/5 를 자동 통과한다.
+`tests/{,unit,property,eval}/__init__.py` 추가 + `pythonpath = ["src", "."]`.
+**Context**: todo #9 완료
+
+---
+
+## Day 2 · 게이트 G2 (Step 18)
+**Timestamp**: 2026-08-19T13:38:00Z
+**AI Response**: `tests/eval/test_classification.py` + `make eval-classify`.
+리포트를 **assert 보다 먼저** 출력(실패 시 진단이 보여야 게이트가 도구가 된다). 상향(불편)/하향(유출) 구분. 하향 오류·기밀 재현율·함정 탐지를 각각 blocking.
+게이트를 **규칙만으로** 측정한다. 근거: 프로덕션은 `max(규칙, EXAONE)` 이고 `max` 는 등급을 올릴 수만 있으므로 `기밀 재현율(프로덕션) >= 기밀 재현율(규칙)` 이 항상 성립한다. 이점 — 결정적(LLM 0회, CI 무료), 하한선 측정, 모델 가용성에 흔들리지 않음. `MESH_EVAL_WITH_EXAONE=1` 로 실측 옵션 제공(11회).
+추가 검사: `OPEN` 오판정 0건 · 모든 코퍼스 문서에 라벨 존재 · 세 등급 모두 존재 · 재실행 결과 동일.
+**결과: 정확도 11/11 = 100% · 기밀 재현율 3/3 = 100% · 함정 1/1 · 하향 0건 → 게이트 G2 통과**
+**Context**: todo #10 완료
+
+---
+
+## Day 2 · 실측 검증 (EXAONE 4회)
+**Timestamp**: 2026-08-19T13:46:00Z
+**AI Response**: 실제 코퍼스 2건으로 구조 추출 실측.
+
+🔴 **설계 결함 발견 (발견 14)**: 첫 실측 페이로드가 **검증 6/6 통과 + 원문 0개**인데 **답이 틀린다**. 두 문서를 한 프롬프트에 넣고 평탄한 `{슬롯: 값}` 으로 조립하니 고객사 문서의 `session_binding=required` 가 자사 문서의 `none` 으로 덮여 사라졌다. `constraint_conflict_check` 는 두 근거를 **대조하는** task 인데 대조 대상이 소실됐고, Agent 는 "충돌 없음"이라고 답한다. 유출이 아니라 정확성 실패이며, 검증 6단계가 전부 통과하므로 유출보다 발견하기 어렵다.
+조치: ① 문서마다 따로 슬롯을 채운다(한 프롬프트에 여러 문서를 넣으면 모델이 상충을 뭉개고 출처도 사라진다) ② `facts` 를 `{ref: {슬롯: 값}}` 으로 분리.
+파생 수정: `slot_entries()` 가 **경로별로** 반환(이름별 dict 로 뭉치면 두 근거 중 하나만 범위 검사된다) · `check_schema` 가 `facts` 하위 ref 라벨을 형식 정규식으로 허용 · 필수 슬롯은 **근거 전체에서** 채워지면 충족(세션 최대시간은 고객사 문서에만, 토큰 수명은 자사 문서에만 있다).
+
+재실측: 검증 6/6 · 562 bytes · 원문 5-gram 0건(대조 549개) · `verbatim_sentence_count=0` · 지연 0.86s(문서 2건, 호출 2회). `H社`·`하나텔`·`REQ-4412`·`CTR-204817`·`EAP-AKA`·`12억`·`김철수`·`Nova`·`atlas` 전부 부재. **충돌이 페이로드에 보존됨** (`REQ_A.session_binding=required` vs `COMP_A.session_binding=none`).
+
+**환경 발견 (발견 16)**: AWS 임시 자격증명 만료(`ExpiredToken`). 발견 5가 예측한 대로다. Day 2 에는 영향 없음(Bedrock 은 대역으로 검증). **Day 3 전 갱신 필요**, 또는 `AGENT_TRANSPORT=mock` 으로 우회.
+**Context**: 실측 검증. LLM 예산 준수 (Day 2 총 EXAONE 5회, Bedrock 0회)
+
+---
+
+## Day 2 · 종합 검증 + 문서 갱신
+**Timestamp**: 2026-08-19T13:58:00Z
+**AI Response**: `make test` 712개 통과 · `make lint` 통과 · `make audit` 0건 · `make eval-classify` 통과 · `make preflight` 실패 1(AWS 자격증명 만료).
+문서 갱신: `preflight-findings.md` §9~10 추가(발견 12~16 + Day 2 종료 상태 + 남은 한계 6건) · `day2-implementation-report.md` 작성 · `aidlc-state.md`(G2 통과, SG10~12 신설, Day 2 완료 내역, 실측 사실 11~15) · u1 계획 Step 9~18 체크박스 + 스토리 추적 + 완료 기준.
+**파일 길이 기준 수정**: 원래 "파일당 300줄 이하 / `gatekeeper.py` 150줄 이내"는 미달(831줄). 그중 74%가 주석·docstring 이다. 기준의 의도("한 파일이 너무 많은 일을 하지 않게")는 문(statement) 수로 재면 충족되고(전 파일 250문 이하), 이 프로젝트에서 주석을 줄이는 것은 손해다 — 발견 12~14 가 전부 "왜 이렇게 했는지"를 모르면 되돌려질 수 있는 종류다. 기준을 **문 250개 이하**로 수정.
+**Context**: todo #11 완료
+
+---

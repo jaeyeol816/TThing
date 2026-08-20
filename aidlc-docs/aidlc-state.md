@@ -4,9 +4,9 @@
 - **Project Name**: 대리 에이전트 메시 (Delegate Agent Mesh)
 - **Project Type**: Greenfield
 - **Start Date**: 2026-08-19T00:00:00Z
-- **Last Updated**: 2026-08-19T11:30:00Z
-- **Current Stage**: CONSTRUCTION - Code Generation Part 1 (Planning) Complete
-- **Next Stage**: CONSTRUCTION - Code Generation Part 2 (Generation) — **awaiting approval**
+- **Last Updated**: 2026-08-19T13:10:00Z
+- **Current Stage**: CONSTRUCTION - Code Generation Part 2 (U1 Day 2 완료)
+- **Next Stage**: Day 3 — U2 Store 완성 + U3 Agent/Orchestrator (소유 B)
 
 ## Workspace State
 - **Existing Code**: No
@@ -49,7 +49,7 @@
 
 | Unit | Functional Design | NFR Requirements | NFR Design | Infrastructure Design | Code Gen P1 | Code Gen P2 |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **U1** gatekeeper-core | [x] | [x] | [x] | SKIP | [x] | [ ] |
+| **U1** gatekeeper-core | [x] | [x] | [x] | SKIP | [x] | **[x]** |
 | **U2** knowledge-edge | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
 | **U3** agent-mesh | [x] | [x] | SKIP | SKIP | [x] | [ ] |
 | **U4** console-web | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
@@ -81,12 +81,12 @@
 |---|---|---|:---:|
 | **SG1** | Day 1 첫 커밋 전 | `.gitignore`가 자격증명 3종 커버 🔴 | **[x]** 커밋 c91c1b8 검증 |
 | **G1** | Day 1 종료 | `schemas.py` + `vocab.json` 동결 | **[x]** 계약 6종 동결 |
-| **G2** | Day 2 종료 | **기밀 재현율 100%**, 정확도 ≥90% 🔴 | **[~]** 규칙만으로 11/11=100% 예비 통과. `make eval-classify` 미구현 |
+| **G2** | Day 2 종료 | **기밀 재현율 100%**, 정확도 ≥90% 🔴 | **[x] 통과** `make eval-classify` 11/11=100% · 기밀 3/3 · 함정 1/1 · 하향 0건 |
 | **G3** | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 | [ ] |
 | **SG2~4** | U5 배포 전 | 브로커 인증·최소권한·감사 무결성 | [ ] |
 | **G4** | Day 5 | **유출 0건** (자동 + 육안 전수) 🔴 | [ ] |
 | **G5** | Day 5 | 목업 모드로 3막 전체 통과 | [ ] |
-| **SG5** | Day 5 | 로그·감사에 원문·토큰·`reasoning*` 부재 | **[~]** `RedactingFilter` + `strip_thinking` 구현·검증. 감사 로그는 Day 2 |
+| **SG5** | Day 5 | 로그·감사에 원문·토큰·`reasoning*` 부재 | **[x]** 감사 로그가 금지 필드를 **거부**한다 (`reject_forbidden`) |
 
 **추가 게이트 (Day 1 에 신설)**
 
@@ -96,6 +96,9 @@
 | SG7 | import 경계 3개 규칙 (ast 검사) | **[x]** |
 | SG8 | `logging` 예약어 충돌 0건 (ast 검사) | **[x]** |
 | SG9 | 차단 목록 ∩ 가명화 목록 = ∅ (로드 시점 강제) | **[x]** |
+| SG10 | `validator.py` 순수성 — I/O·설정 참조 0건 (ast, Lambda 번들 조건) | **[x]** Day 2 신설 |
+| SG11 | `audit` 테이블 추가 전용 — `DELETE`/`UPDATE` 문 부재 (정규식) | **[x]** Day 2 신설 |
+| SG12 | 관문 8개에 `NotImplementedError` 스텁 부재 (ast) | **[x]** Day 2 신설 |
 
 **G2를 통과하지 못하면 Day 3으로 넘어가지 않는다** (설계 §7.2).
 
@@ -115,12 +118,18 @@
 | 8 | 로컬 Python 3.9.12 (부족), `uv`·Node 있음, `aws` CLI 구버전 | 신규 |
 | 9 | 워크스페이스에 자격증명 평문 + `.gitignore` 없음 | **blocking 조치 필요** |
 | 10 | EXAONE 엔드포인트가 사외 SaaS → **신뢰 경계가 시뮬레이션** | 정직하게 고지 |
+| 11 | 여러 문서를 한 프롬프트에 넣으면 상충하는 사실이 하나로 합쳐진다 | **설계 변경 → 문서별 추출 + `facts` 를 ref 별로 분리** |
+| 12 | `json.dumps` 의 `\n` 이스케이프가 5-gram 대조를 우회시킨다 | **설계 변경 → 원시 문자열 값을 함께 대조** |
+| 13 | 헤더 등급 표기를 금칙어 검사보다 먼저 보면 하향 경로가 생긴다 | **설계 변경 → 규칙 순서 재배치** |
+| 14 | 슬롯 채우기 실측 0.43s/문서 · 페이로드 562 bytes · 원문 0개 | 확인 |
+| 15 | AWS 임시 자격증명 만료됨 (발견 5가 예측한 대로) | Day 3 전 갱신 필요 |
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
-- **Current Stage**: Code Generation Part 2 — **Day 1 완료**
-- **Next Stage**: Day 2 (U1 Step 9~18) — 등급 판정 · 검증기 · 추출기 · 게이트 G2
-- **Status**: Day 1 동결 완료. Day 2 착수 가능
+- **Current Stage**: Code Generation Part 2 — **Day 1~2 완료**
+- **Next Stage**: Day 3 (U2 Step + U3) — Store 완성 · Agent · Orchestrator (소유 B)
+- **Status**: 게이트 G2 통과. Day 3 착수 가능
+- **Blocker (Day 3)**: AWS 임시 자격증명 만료 → 갱신 필요. `AGENT_TRANSPORT=mock` 으로 우회 가능
 
 ### Day 1 완료 내역 (2026-08-19)
 
@@ -148,15 +157,53 @@
 3. 🔴 차단 목록과 가명화 목록을 섞어 정확도 55% → `pseudonyms.json` 분리 + 로드 시점 겹침 거부
 4. 의존성 취약점 8건 → 버전 상향 + `starlette` 직접 고정
 
-**Day 2 에 남은 것** (U1 Step 9~18, 소유 A)
-- `classifier.py` 규칙 판정 → EXAONE 보조
-- `validator.py` 6단계 (순수 함수)
-- `extractor.py` 슬롯 채우기 + 화이트리스트 조립
-- `pseudonymizer.py` / `rehydrator.py`
-- `audit.py` SQLite + 원문 검색
-- `gatekeeper.py` 구현 채우기
-- PBT (`tests/generators.py`, PB-1~PB-10)
-- **게이트 G2**: `make eval-classify` 기밀 재현율 100%
+### Day 2 완료 내역 (2026-08-19) — U1 Step 9~18
+
+보고서: `aidlc-docs/construction/day2-implementation-report.md`
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **712개 통과** (unit 681 + property 31) |
+| **게이트 G2** | **정확도 11/11 = 100% · 기밀 재현율 3/3 = 100% · 함정 1/1 · 하향 0건** |
+| lint / format | 통과 |
+| 의존성 취약점 | **0건** |
+| LLM 호출 | EXAONE **5회** (추출 검증 4 + preflight 1) · Bedrock 0회 |
+| 구조 추출 실측 | 검증 6/6 · 562 bytes · 원문 5-gram 0건 · 지연 0.86s (문서 2건) |
+
+**신규 모듈 6개**
+
+| 모듈 | 레이어 | 역할 |
+|---|:---:|---|
+| `validator.py` | L1 | 검증 6단계 — **순수 함수** (U5 Lambda 번들 조건) |
+| `rehydrator.py` | L1 | 기호 → 실제 이름. 매핑 없는 기호는 유지 |
+| `classifier.py` | L3 | `max(규칙, EXAONE)`. 규칙이 하한선 |
+| `extractor.py` | L3 | 슬롯 채우기 + 화이트리스트 조립 |
+| `pseudonymizer.py` | L3 | 식별자 치환, 기술 용어 보존 (LLM 0회) |
+| `audit.py` | L4 | SQLite 추가 전용 + 원문 검색 + 전수 유출 검사 |
+
+`gatekeeper.py` 8개 관문 구현 완료 + `send_and_rehydrate()` 신설
+(매핑 폐기를 `try/finally` 로 보장).
+
+**Day 2 에 발견·수정한 설계 결함 3건** (`preflight-findings.md` §9)
+
+1. 🔴 **`BR-C-03` 규칙 순서에 조용한 하향 경로** — 헤더(작성자 자기 신고)가
+   금칙어 검사(기계적)보다 먼저라서 `보안등급: 사내` 한 줄로 금액 탐지(FR-52)를
+   무력화할 수 있었다. SECRET 을 만드는 기계적 검사를 앞으로 옮겼다.
+   함께: `OPEN` 은 헤더 + 경로 **두 신호**를 요구한다
+2. 🔴 **`json.dumps` 가 5-gram 대조를 우회시킨다** — 문자열 값의 실제 개행이
+   `\n` 두 글자로 직렬화되어 공백 정규화를 빠져나갔다. BR-V-05 가 막겠다고 한
+   우회가 실제로 뚫려 있었다
+3. 🔴 **평탄한 `facts` 가 상충하는 사실을 합쳐 버린다** — 검증 6/6 통과 + 원문
+   0개인데 **답이 틀린다.** `facts` 를 `{ref: {슬롯: 값}}` 으로 분리하고
+   문서마다 따로 슬롯을 채운다
+
+부수: Day 1 계약에 사내·공개 페이로드 형태가 없었다 → `excerpts` 키 도입 +
+표현별 허용 키 분리 (`STRUCTURED` 에서는 텍스트 키 금지)
+
+**Day 3 에 남은 것** (소유 B)
+- `store.read()` / `select_paths()` / `list_agents()`
+- `agent.py` · `orchestrator.py` · `inbox.py` · `main.py`
+- 게이트 G3: 시나리오 1 종단 통과 + 인용 0개 차단
 
 ## Open Items for User
 

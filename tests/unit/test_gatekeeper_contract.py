@@ -5,8 +5,11 @@ Day 1 에 실제로 구현하는 것:
   - `EnvelopeCache`        매핑 수명 관리
   - `new_envelope_id`
 
-나머지는 시그니처만 있고 NotImplementedError 를 던진다.
-B(U3)가 Day 3 에 이 시그니처에 대고 코딩하고, A 가 Day 2 에 구현을 채운다.
+Day 2 에 나머지 관문의 구현이 채워졌다. 이 파일은 이제 두 가지를 지킨다:
+  - 시그니처가 바뀌지 않는다 (U3 의 코드가 이것에 대고 쓰여 있다)
+  - **스텁으로 남은 관문이 없다** (`test_no_method_is_still_a_stub`)
+
+B(U3)가 Day 3 에 이 시그니처에 대고 코딩한다.
 
 `check_preconditions` 를 Day 1 에 구현하는 이유: 이게 없으면 Day 2 에 다른
 코드가 먼저 붙어 전제조건 없이 경계를 넘을 수 있다.
@@ -14,8 +17,10 @@ B(U3)가 Day 3 에 이 시그니처에 대고 코딩하고, A 가 Day 2 에 구�
 
 from __future__ import annotations
 
+import ast
 import inspect
 import time
+from pathlib import Path
 
 import pytest
 
@@ -278,35 +283,48 @@ def test_all_seven_gates_exist():
         assert callable(getattr(Gatekeeper, name))
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["classify", "plan_calls", "to_payload", "validate", "preview", "rehydrate", "answer_in_zone"],
-)
-def test_unimplemented_methods_fail_loudly(name):
-    """Day 2 에 구현할 것들. 조용히 None 을 반환하지 않는다.
+def test_no_method_is_still_a_stub():
+    """Day 2 완료 확인 — `NotImplementedError` 로 남은 관문이 없다.
 
-    `ask_agent` 은 제외한다 — 전제조건 검사가 먼저 돌아
-    GatekeeperError 를 던지는 것이 정상이다 (별도 테스트).
+    Day 1 에는 이 테스트가 반대 방향("전부 스텁이어야 한다")이었다.
+    구현이 끝난 지금은 **스텁이 남아 있으면 실패**해야 한다.
+    시그니처만 채우고 본문을 비워 두면 U3 가 조용히 None 을 받는다.
+
+    소스를 ast 로 검사한다 — 인스턴스를 만들지 않고 확인할 수 있고,
+    "예외를 던지지 않는 빈 구현"도 함께 잡힌다.
     """
-    import asyncio
+    src = Path(inspect.getfile(Gatekeeper)).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Gatekeeper")
 
-    gk = object.__new__(Gatekeeper)
-    method = getattr(Gatekeeper, name)
-    sig = inspect.signature(method)
-
-    positional, keywords = [], {}
-    for pname, param in sig.parameters.items():
-        if pname == "self":
+    stubs: list[str] = []
+    for node in cls.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
-        if param.kind is inspect.Parameter.KEYWORD_ONLY:
-            keywords[pname] = None
-        else:
-            positional.append(None)
+        if node.name not in EXPECTED_SIGNATURES:
+            continue
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Raise)
+                and isinstance(child.exc, ast.Call)
+                and isinstance(child.exc.func, ast.Name)
+                and child.exc.func.id == "NotImplementedError"
+            ):
+                stubs.append(node.name)
+    assert not stubs, f"아직 스텁으로 남은 관문: {sorted(set(stubs))}"
 
-    with pytest.raises(NotImplementedError, match="Day 2"):
-        result = method(gk, *positional, **keywords)
-        if inspect.iscoroutine(result):
-            asyncio.run(result)
+
+def test_mandatory_prompt_fragments_are_enforced():
+    """필수 문구 5개가 없으면 `GatekeeperError` (BR-AG-02).
+
+    `assert` 로 구현하면 `python -O` 에서 사라진다. 여기서도 그것을 확인한다.
+    """
+    from mesh.gatekeeper import MANDATORY_FRAGMENTS, assert_all_mandatory_present
+
+    assert len(MANDATORY_FRAGMENTS) == 5
+    assert_all_mandatory_present(" ".join(MANDATORY_FRAGMENTS))
+    with pytest.raises(GatekeeperError, match="필수 문구"):
+        assert_all_mandatory_present("페르소나 프롬프트만 있는 경우")
 
 
 def test_gatekeeper_is_the_only_broker_importer():

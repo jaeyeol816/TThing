@@ -38,7 +38,7 @@ packages = ["src/mesh"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-pythonpath = ["src"]
+pythonpath = ["src", "."]  # "." — tests.generators 를 패키지로 import 한다
 testpaths = ["tests"]
 filterwarnings = ["error::DeprecationWarning"]
 

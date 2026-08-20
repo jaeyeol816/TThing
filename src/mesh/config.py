@@ -14,7 +14,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -574,13 +573,10 @@ def load_agents(path: Path) -> dict[str, AgentConfig]:
 # ══════════════════════════════════════════════════════════════════════
 # 유틸
 # ══════════════════════════════════════════════════════════════════════
-
-_WS_RE = re.compile(r"\s+")
-
-
-def normalize_text(s: str) -> str:
-    """5-gram 대조와 divergent 판정에 쓰는 정규화.
-
-    공백 축약 + 소문자화. 공백만 바꿔 우회하는 것을 막는다 (BR-V-05).
-    """
-    return _WS_RE.sub(" ", s).strip().lower()
+#
+# ⚠️ `normalize_text()` 는 여기 없다. `mesh.validator` 로 옮겼다.
+#
+#    U5 Lambda 가 재검증을 위해 `validator.py` 를 번들하는데, 그 함수가
+#    `config.py` 에 있으면 Lambda 가 `yaml`·환경변수까지 끌고 들어간다.
+#    그리고 로컬과 Lambda 가 **같은 정규화**를 써야 판정이 갈리지 않으므로
+#    구현이 두 곳에 있어서는 안 된다. 5-gram 을 쓰는 모듈 옆에 둔다.

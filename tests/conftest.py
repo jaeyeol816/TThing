@@ -82,3 +82,63 @@ def _quiet_logging():
     logger.setLevel(logging.DEBUG)
     yield
     logger.handlers[:], logger.level, logger.propagate = prev
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 어휘 사전 · 데이터 번들 (Day 2)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture(scope="session")
+def vocab():
+    """실제 `data/vocab.json`. 손으로 만든 스키마를 쓰지 않는다 —
+    테스트가 통과해도 실물이 깨져 있으면 의미가 없다."""
+    from mesh.schemas import Vocabulary
+
+    return Vocabulary.load(DATA / "vocab.json")
+
+
+@pytest.fixture(scope="session")
+def banned():
+    from mesh.schemas import BannedTerms
+
+    return BannedTerms.load(DATA / "banned.json")
+
+
+@pytest.fixture(scope="session")
+def pseudonyms():
+    from mesh.schemas import PseudonymTargets
+
+    return PseudonymTargets.load(DATA / "pseudonyms.json")
+
+
+@pytest.fixture(scope="session")
+def rules(banned):
+    from mesh.schemas import ClassificationRules
+
+    return ClassificationRules(banned=banned)
+
+
+@pytest.fixture(scope="session")
+def conflict_schema(vocab):
+    """시나리오 1 의 task 스키마. 필수 슬롯 2개 + 선택 슬롯 4개."""
+    return vocab.task_schemas["constraint_conflict_check"]
+
+
+@pytest.fixture(scope="session")
+def technique_schema(vocab):
+    return vocab.task_schemas["technique_lookup"]
+
+
+@pytest.fixture
+def cfg(mock_env):
+    from mesh.config import Config
+
+    return Config.load()
+
+
+@pytest.fixture
+def bundle(cfg):
+    from mesh.config import DataBundle
+
+    return DataBundle(cfg, load_agent_configs=False)
