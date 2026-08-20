@@ -28,9 +28,11 @@
         "used_external_agent": false,
         "freshness": null,
         "session_as_of": null,
-        "unresolved_refs": []
+        "unresolved_refs": [],
+        "trace_id": null
       },
-      "blocked_reason": "필수 슬롯 미충족 — 성능 수치 필드가 어휘 사전에 없다"
+      "blocked_reason": "필수 슬롯 미충족 — 성능 수치 필드가 어휘 사전에 없다",
+      "trace_id": null
     }
   ],
   "decomposed": false,

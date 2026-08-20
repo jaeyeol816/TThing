@@ -730,13 +730,7 @@ class Gatekeeper:
     # ── 유일한 외부 호출 지점 ────────────────────────────────────────
 
     async def ask_agent(
-        self,
-        env: PayloadEnvelope,
-        persona: Persona,
-        approved_by: str,
-        *,
-        tool_config: dict | None = None,
-        tool_handler: object | None = None,
+        self, env: PayloadEnvelope, persona: Persona, approved_by: str
     ) -> AgentResponse:
         """**신뢰 경계를 넘는 유일한 통로.**
 
@@ -764,11 +758,7 @@ class Gatekeeper:
         request = self._request_record(env, persona, approved_by, model_id=model_id)
         self.audit.record(request)
 
-        resp = await self.broker.invoke(
-            env, system_prompt, model_id,
-            tool_config=tool_config,
-            tool_handler=tool_handler,
-        )
+        resp = await self.broker.invoke(env, system_prompt, model_id)
 
         self.audit.record(
             request.model_copy(

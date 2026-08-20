@@ -20,6 +20,24 @@ DATA = REPO / "agents" / "shared"  # 새 구조: shared/ 하위에 공유 파일
 REQUIRED_DATA_FILES = ("vocab.json", "banned.json", "pseudonyms.json")
 
 
+def agent_dir_names() -> tuple[str, ...]:
+    """`config/agents.yaml` 에 있는 사람의 디렉터리 이름.
+
+    ⚠️ 목록을 여기 손으로 적지 않는다. 적으면 `agents.yaml` 에 사람을 추가할
+       때마다 픽스처도 고쳐야 하고, 잊으면 그 사람만 세션 없이 테스트를 돈다 —
+       "추가는 항목 하나 더하는 것으로 끝난다"(FR-23)가 테스트에서 깨진다.
+
+    YAML 을 직접 읽는다. `mesh.config` 를 부르면 이 시점에 환경변수가 아직
+    준비되지 않아 순서 의존이 생긴다.
+    """
+    import yaml
+
+    raw = yaml.safe_load((REPO / "config" / "agents.yaml").read_text(encoding="utf-8")) or {}
+    return tuple(
+        str(item["entity_id"]).replace(":", "_") for item in (raw.get("agents") or [])
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Hypothesis (PBT-08) — 시드 로깅 + shrinking
 # ══════════════════════════════════════════════════════════════════════
@@ -42,11 +60,11 @@ def data_root(tmp_path: Path) -> Path:
     for name in REQUIRED_DATA_FILES:
         (shared / name).write_bytes((DATA / name).read_bytes())
     (shared / "fixtures").mkdir()
-    # 각 agent 디렉터리 기본 생성
-    for agent in ("person_kim", "person_park", "person_choi"):
-        (tmp_path / agent / "gatekeeper").mkdir(parents=True)
-        (tmp_path / agent / "data").mkdir(parents=True)
-        (tmp_path / agent / "security_protocol").mkdir(parents=True)
+    # 각 agent 디렉터리 기본 생성 — 목록은 `config/agents.yaml` 에서 온다
+    for agent in agent_dir_names():
+        (tmp_path / agent / "gatekeeper").mkdir(parents=True, exist_ok=True)
+        (tmp_path / agent / "data").mkdir(parents=True, exist_ok=True)
+        (tmp_path / agent / "security_protocol").mkdir(parents=True, exist_ok=True)
     return tmp_path
 
 
@@ -181,8 +199,8 @@ def full_data_root(tmp_path: Path, monkeypatch) -> Path:
         shutil.copytree(DATA / "data", shared / "data",
                         ignore=shutil.ignore_patterns("uploads"))
 
-    # 각 agent 디렉터리 복사
-    for agent in ("person_kim", "person_park", "person_choi"):
+    # 각 agent 디렉터리 복사 — 목록은 `config/agents.yaml` 에서 온다
+    for agent in agent_dir_names():
         src = AGENTS / agent
         dst = tmp_path / agent
         if src.exists():

@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:bae",
+  "updated_at": "2026-08-19T11:40:00+09:00",
+  "focus": "평가 지표 정의 정리 + 검증 셋 고정",
+  "summary": "검증 셋이 실험마다 달라 비교가 불가능했던 문제를 고정 셋으로 해결하는 중",
+  "open_paths": [
+    "person_bae/data/docs/eval-metrics.md",
+    "person_bae/data/runs/2026-08-18/eval.log"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_bae/data/docs/eval-metrics.md",
+      "at": "2026-08-19T11:32:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

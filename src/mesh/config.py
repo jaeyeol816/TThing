@@ -29,6 +29,7 @@ from mesh.schemas import (
     BannedTerms,
     ClassificationRules,
     Disclose,
+    OrgPlacement,
     PseudonymTargets,
     Transport,
     Vocabulary,
@@ -344,6 +345,16 @@ class Config:
     confidence_escalate: float
     stale_confidence_factor: float
 
+    # ── 브로드캐스트 선별 ─────────────────────────────────────────────
+    #: 후보로 남길 점수 하한. 낮출수록 넓게 남는다.
+    #:
+    #: ⚠️ 이 값은 **경계와 무관하다.** 선별은 문서를 읽지 않고 경계를 넘지
+    #:    않으므로, 넓게 잡아도 새로 나가는 것이 없다. 좁게 잡았을 때의 손해
+    #:    (답할 수 있는 사람이 화면에서 사라진다) 가 더 크다 (`triage` 참조).
+    broadcast_threshold: float
+    #: 한 번의 브로드캐스트에서 후보로 남길 최대 인원.
+    broadcast_max_relevant: int
+
     # ── 피어 메시 (같은 네트워크의 다른 컴퓨터) ───────────────────────
     #: 이 노드의 이름. 화면과 피어 목록에 보인다. 기본값은 호스트명이다.
     node_name: str
@@ -475,6 +486,16 @@ class Config:
     def agents_path(self) -> Path:
         return Path("config/agents.yaml")
 
+    @property
+    def org_path(self) -> Path:
+        """조직도 정의. **없어도 앱은 뜬다** — `org.load_org()` 가 빈 차트를 준다.
+
+        `agents.yaml` 옆에 두는 이유: 둘 다 "이 회사는 이렇게 생겼다"는 선언이고
+        데이터(`MESH_DATA_ROOT`)가 아니다. 데이터 루트를 갈아끼워도 조직 구조는
+        같아야 한다.
+        """
+        return Path("config/org.yaml")
+
     def now(self) -> datetime:
         """MESH_DEMO_NOW 가 설정돼 있으면 그 값. 데모 재현성 (BR-S-04)."""
         return self.demo_now or datetime.now().astimezone()
@@ -489,7 +510,7 @@ class Config:
             strict: True 면 fail-fast 검증을 수행한다.
                     테스트에서 부분 설정으로 인스턴스를 만들 때 False.
         """
-        data_root_raw = _env("MESH_DATA_ROOT", "./data")
+        data_root_raw = _env("MESH_DATA_ROOT", "./agents")
         data_root = Path(data_root_raw)
 
         demo_now_raw = _env("MESH_DEMO_NOW")
@@ -538,6 +559,8 @@ class Config:
             confidence_auto=_env_float("CONFIDENCE_AUTO", 0.75),
             confidence_escalate=_env_float("CONFIDENCE_ESCALATE", 0.45),
             stale_confidence_factor=_env_float("STALE_CONFIDENCE_FACTOR", 0.8),
+            broadcast_threshold=_env_float("BROADCAST_THRESHOLD", 0.5),
+            broadcast_max_relevant=_env_int("BROADCAST_MAX_RELEVANT", 6),
             node_name=_env("MESH_NODE_NAME") or _default_node_name(),
             peer_token=_env("MESH_PEER_TOKEN") or None,
             peers=_parse_peers(_env("MESH_PEERS")),
@@ -653,9 +676,32 @@ class DataBundle:
         self._add_entity_ids_to_pseudonyms()
         self._check_lists_are_disjoint()
 
+        # ── 조직도 ────────────────────────────────────────────────────
+        #
+        # ⚠️ 지연 import 다. `mesh.org` 는 `schemas`·`exceptions` 만 쓰는 같은 층
+        #    모듈이지만, 파일 상단에서 부르면 `config` 가 조직도 없이는 못 뜨는
+        #    것처럼 보인다. 조직도는 **표시용**이고 없어도 질의는 돌아야 한다.
+        #
+        # `banned` 를 넘기는 것이 요점이다. 조직도는 인증 없이 보이는 화면이라
+        # 여기 실린 고객사명은 게이트키퍼를 우회한 유출이 된다 (FR-31 과 같은
+        # 이유). 로드 시점에 막는다.
+        from mesh.org import OrgChart, load_org  # 지연 import — 순환 방지
+
+        self.org: OrgChart = load_org(cfg.org_path, banned=self.banned)
+
         # ProtocolStore — 보안 프로토콜 CRUD
         from mesh.protocol_store import ProtocolStore  # 지연 import — 순환 방지
         self.protocol_store: ProtocolStore = ProtocolStore(cfg.data_root, cfg=cfg)
+
+    @property
+    def placements(self) -> dict[str, OrgPlacement]:
+        """`entity_id` -> 조직도의 자리. 자리가 없는 사람은 **빠진다.**
+
+        `agents` 를 매번 훑는 이유: 테스트가 `data.agents[...]` 에 사람을
+        꽂아 넣는 경로가 있고(FR-23 검증), 캐시하면 그 사람이 조직도에
+        나타나지 않는다.
+        """
+        return {eid: a.org for eid, a in self.agents.items() if a.org is not None}
 
     @property
     def rules(self) -> ClassificationRules:
@@ -757,6 +803,18 @@ def load_agents(path: Path) -> dict[str, AgentConfig]:
                 "disclose.expertise 는 끌 수 없다. 담당 영역을 숨기면 지목이 불가능해진다",
                 extra={"entity_id": item.get("entity_id")},
             )
+        # 조직도의 자리. **id 만 받는다** — 본부·팀 이름을 여기 적게 하면
+        # 조직 개편이 이 파일 열 줄을 고치는 일이 된다 (OrgPlacement 참조).
+        org_raw = item.get("org")
+        placement: OrgPlacement | None = None
+        if org_raw:
+            try:
+                placement = OrgPlacement(**org_raw)
+            except Exception as e:  # noqa: BLE001 — 어느 항목인지 알려주고 멈춘다
+                raise ConfigError(
+                    f"{item.get('entity_id')!r} 의 org 항목이 잘못됐다: {e}"
+                ) from e
+
         cfg = AgentConfig(
             entity_id=item["entity_id"],
             display_name=item["display_name"],
@@ -766,6 +824,8 @@ def load_agents(path: Path) -> dict[str, AgentConfig]:
             escalation_inbox=item.get("escalation_inbox", item["entity_id"]),
             daily_limit=int(item.get("daily_limit", 50)),
             disclose=Disclose(**disclose_raw),
+            org=placement,
+            topics=tuple(str(t) for t in (item.get("topics") or [])),
         )
         if cfg.entity_id in out:
             raise ConfigError(f"중복 entity_id: {cfg.entity_id}")

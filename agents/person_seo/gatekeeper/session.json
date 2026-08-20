@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:seo",
+  "updated_at": "2026-08-19T14:30:00+09:00",
+  "focus": "추론 지연 개선 — 배치 크기 재조정",
+  "summary": "서빙 배치 크기와 양자화 조합을 바꿔 지연을 줄이는 실험 중. 시험 환경 수치만 확보된 상태",
+  "open_paths": [
+    "person_seo/data/docs/serving-tuning-notes.md",
+    "person_seo/data/configs/serving.yaml"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_seo/data/configs/serving.yaml",
+      "at": "2026-08-19T14:18:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

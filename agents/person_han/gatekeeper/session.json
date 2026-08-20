@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:han",
+  "updated_at": "2026-08-19T13:10:00+09:00",
+  "focus": "서명 키 회전 절차 자동화",
+  "summary": "서명 키 회전을 수동 절차에서 CI 작업으로 옮기는 중. 회전 중 무중단 검증이 남아 있음",
+  "open_paths": [
+    "person_han/data/docs/key-rotation-runbook.md",
+    "person_han/data/scripts/rotate_signing_key.py"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_han/data/scripts/rotate_signing_key.py",
+      "at": "2026-08-19T12:58:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

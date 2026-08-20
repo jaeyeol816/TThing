@@ -56,21 +56,24 @@ EXAONE_MODE=mock AGENT_TRANSPORT=mock make run
 src/mesh/            애플리케이션
   config.py          환경변수 · 경로 가드 · 로깅
   schemas.py         타입 계약  ⚠️ Day 1 동결
+  org.py             조직도 — 자리(unit)와 직급(rank)의 일반 트리
   gatekeeper.py      Agent 를 감싸는 막 — 경계를 넘는 유일한 통로
   classifier.py      등급 판정  max(규칙, EXAONE)
+  triage.py          브로드캐스트 선별 — "내가 답할 수 있는가" (경계를 넘지 않는다)
   extractor.py       구조 추출  슬롯 채우기 + 코드가 조립
   validator.py       검증 6단계  순수 함수
   pseudonymizer.py   가명화 (사내 등급)
   rehydrator.py      재수화  기호 → 실제 이름
+  trace.py           처리 경과 — 단계별로 열어 보는 화면용 기록 (TTL 30분)
   audit.py           감사 로그 (SQLite 원본)
   store.py           세션 + 파일 직접 읽기
   agent.py           Claude 대리인
-  orchestrator.py    전달 · 신뢰도 분기 · 병기
+  orchestrator.py    브로드캐스트 · 전달 · 신뢰도 분기 · 병기
   inbox.py           에스컬레이션 3버튼
   main.py            FastAPI
   documents.py       문서 업로드 + 즉시 등급 판정
   llm/               exaone.py (신뢰 구역) · broker.py (경계 밖)
-  web/               탭 4개 (빌드 없음)
+  web/               조직도 + 스레드 채팅 + 트레이스 (빌드 없음)
 
 app/                 Tauri 데스크톱 셸 (Rust) — 백엔드 URL 을 여는 창
 
@@ -86,7 +89,8 @@ data/                MESH_DATA_ROOT
   verified/          승인된 Q&A (런타임 생성)
   fixtures/          목업 응답 (재녹화는 빠진 것만 채운다)
 
-config/agents.yaml   에이전트 정의 — 추가는 항목 하나 더하는 것으로 끝난다
+config/agents.yaml   **사람** 정의 — 추가는 항목 하나 더하는 것으로 끝난다
+config/org.yaml      **자리** 정의 — 본부/센터/팀은 데이터다. 코드는 층 이름을 모른다
 infra/               AWS CDK (브로커 Lambda + 감사 미러)
 scripts/             preflight · demo · dump_payloads · e2e · lint_web
 tests/               unit / property / eval
@@ -97,6 +101,9 @@ aidlc-docs/          설계 문서 (마크다운만. 코드 없음)
 ---
 
 ## 핵심 개념 3개
+
+> 조직도 · 브로드캐스트 · 처리 경과의 변경 내역은
+> **[`docs/변경사항-조직도-브로드캐스트-트레이스.md`](docs/변경사항-조직도-브로드캐스트-트레이스.md)** 에 있다.
 
 ### 1. 경계를 넘는 통로는 2개뿐이다
 

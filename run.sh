@@ -5,6 +5,9 @@ export PYTHONUTF8=1
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 
+# LANG 이 없는 환경(도커·cron)에서 한글 출력이 깨지지 않게. run.ps1 과 동일.
+export PYTHONUTF8=1
+
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     CYAN=$'\033[36m'; GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
 else

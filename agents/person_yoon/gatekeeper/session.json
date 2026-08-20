@@ -1,0 +1,18 @@
+{
+  "entity_id": "person:yoon",
+  "updated_at": "2026-08-19T14:20:00+09:00",
+  "focus": "OIDC 백채널 로그아웃 연동 검증",
+  "summary": "외부 IdP 와의 로그아웃 전파를 백채널 방식으로 바꾸는 연동 시험 중. 토큰 수명 정책과 상호작용을 확인하고 있음",
+  "open_paths": [
+    "person_yoon/data/docs/idp-integration-notes.md",
+    "person_yoon/data/docs/token-lifetime-policy.md"
+  ],
+  "recent_edits": [
+    {
+      "path": "person_yoon/data/docs/idp-integration-notes.md",
+      "at": "2026-08-19T14:05:00+09:00"
+    }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

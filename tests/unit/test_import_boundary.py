@@ -263,9 +263,19 @@ LAYERS: dict[str, int] = {
     "mesh.config": 0,
     "mesh.schemas": 0,
     "mesh.protocol_schemas": 0,  # 데이터 모델만 (의존 없음)
+    # 조직도. `schemas`(L0) + `exceptions`(L0) 만 쓰고 `config` 가 지연 import
+    # 한다 — `protocol_store` 와 같은 이유로 config 와 같은 층에 둔다.
+    "mesh.org": 0,
     "mesh.validator": 1,
     "mesh.rehydrator": 1,
     "mesh.api_models": 1,
+    # 게이트키퍼 트레이스. 순수 타입 + 빌더이고 I/O 가 없다.
+    #
+    # ⚠️ `Chunk` 와 `Mapping` 을 **import 하지 않는다** — 아래 두 검사의
+    #    허용 목록에 트레이스가 없는 것이 의도다. 원문과 매핑을 받지 않고
+    #    투영(`TraceEvidence`)과 평범한 dict 만 받는다. 규칙을 넓히는 대신
+    #    투영을 만드는 책임을 이미 원문을 다루는 쪽(orchestrator)에 남겼다.
+    "mesh.trace": 1,
     "mesh.llm": 1,
     "mesh.llm.fixtures": 1,
     "mesh.llm.exaone": 2,
@@ -273,6 +283,9 @@ LAYERS: dict[str, int] = {
     "mesh.classifier": 3,
     "mesh.extractor": 3,
     "mesh.pseudonymizer": 3,
+    # 브로드캐스트 선별. EXAONE(L2)을 쓰므로 판정 계층에 속한다.
+    # 파일을 읽지 않고 `Chunk` 를 만지지 않는다 — 판정 재료가 전부 공개 필드다.
+    "mesh.triage": 3,
     "mesh.protocol_store": 0,  # config에서 지연 import — config와 같은 층
     "mesh.gatekeeper": 4,
     "mesh.audit": 4,

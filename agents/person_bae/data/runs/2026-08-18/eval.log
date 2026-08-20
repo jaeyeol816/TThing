@@ -1,0 +1,12 @@
+[2026-08-18 09:02:11] eval start  split=fixed-v1  sha=8f3c1a20  seed=20260818
+[2026-08-18 09:02:11] preprocess version=v3
+[2026-08-18 09:04:38] macro_f1=0.771  micro_f1=0.884  pr_auc=0.742
+[2026-08-18 09:04:38] per-class f1: majority=0.921 minor_a=0.688 minor_b=0.704
+[2026-08-18 09:04:39] WARN  minor_b support=214 (<500) — 신뢰구간 넓음, 단독 인용 금지
+[2026-08-18 09:04:39] eval done  elapsed=147s
+
+[2026-08-18 14:31:02] eval start  split=fixed-v1  sha=8f3c1a20  seed=20260818
+[2026-08-18 14:31:02] preprocess version=v3
+[2026-08-18 14:33:20] macro_f1=0.773  micro_f1=0.884  pr_auc=0.745
+[2026-08-18 14:33:20] repeat-run delta: macro_f1 +0.002 — 시드 동일, 재현 확인
+[2026-08-18 14:33:21] eval done  elapsed=138s

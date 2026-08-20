@@ -99,18 +99,11 @@ class BrokerClient:
         env: PayloadEnvelope,
         system_prompt: str,
         model_id: str,
-        *,
-        tool_config: dict | None = None,
-        tool_handler: Any | None = None,
     ) -> AgentResponse:
         """경계를 넘는 호출.
 
         ⚠️ 이 메서드는 `Gatekeeper.ask_agent()` 에서만 호출된다.
            그쪽에서 검증 통과와 사용자 승인을 이미 확인했다.
-
-        tool_config: Bedrock toolConfig 딕셔너리 (도구 정의)
-        tool_handler: async callable(tool_name, tool_input) -> str
-                      도구 실행 결과 텍스트를 반환한다.
 
         Raises:
             BrokerError: 호출 실패 또는 재검증 미수행. 호출자는 answer_in_zone 폴백
@@ -119,11 +112,7 @@ class BrokerClient:
             case Transport.BROKER:
                 return await self._via_broker(env, system_prompt, model_id)
             case Transport.DIRECT:
-                return await self._via_bedrock(
-                    env, system_prompt, model_id,
-                    tool_config=tool_config,
-                    tool_handler=tool_handler,
-                )
+                return await self._via_bedrock(env, system_prompt, model_id)
             case Transport.MOCK:
                 return self._via_fixture(env, model_id)
 
@@ -194,92 +183,44 @@ class BrokerClient:
     # ── direct 모드 ──────────────────────────────────────────────────
 
     async def _via_bedrock(
-        self,
-        env: PayloadEnvelope,
-        system_prompt: str,
-        model_id: str,
-        *,
-        tool_config: dict | None = None,
-        tool_handler: Any | None = None,
+        self, env: PayloadEnvelope, system_prompt: str, model_id: str
     ) -> AgentResponse:
         import asyncio
 
         from botocore.exceptions import BotoCoreError, ClientError
 
-        messages: list[dict] = [
-            {
-                "role": "user",
-                "content": [
-                    {"text": json.dumps(env.payload, ensure_ascii=False, indent=2)}
+        def _call() -> dict:
+            return self._bedrock_client().converse(
+                modelId=model_id,
+                system=[{"text": system_prompt}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"text": json.dumps(env.payload, ensure_ascii=False, indent=2)}
+                        ],
+                    }
                 ],
-            }
-        ]
+                inferenceConfig={"maxTokens": 2000, "temperature": 0},
+            )
 
-        def _call(msgs: list[dict]) -> dict:
-            kwargs: dict = {
-                "modelId": model_id,
-                "system": [{"text": system_prompt}],
-                "messages": msgs,
-                "inferenceConfig": {"maxTokens": 2000, "temperature": 0},
-            }
-            if tool_config:
-                kwargs["toolConfig"] = tool_config
-            return self._bedrock_client().converse(**kwargs)
+        try:
+            raw = await asyncio.to_thread(_call)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "?")
+            raise BrokerError(f"Bedrock 오류: {code}") from e
+        except BotoCoreError as e:
+            raise BrokerError(f"Bedrock 연결 실패: {type(e).__name__}") from e
 
-        # tool-use 루프 (최대 3회 왕복)
-        usage_total: dict = {}
-        for _round in range(3):
-            try:
-                raw = await asyncio.to_thread(_call, messages)
-            except ClientError as e:
-                code = e.response.get("Error", {}).get("Code", "?")
-                raise BrokerError(f"Bedrock 오류: {code}") from e
-            except BotoCoreError as e:
-                raise BrokerError(f"Bedrock 연결 실패: {type(e).__name__}") from e
+        try:
+            text = raw["output"]["message"]["content"][0]["text"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise BrokerError("Bedrock 응답 형식이 예상과 다르다") from e
 
-            # 사용량 누적
-            for k, v in (raw.get("usage") or {}).items():
-                usage_total[k] = usage_total.get(k, 0) + v
+        out = self._parse_agent_text(text, usage=raw.get("usage"))
 
-            stop_reason = raw.get("stopReason", "")
-            content = raw["output"]["message"]["content"]
-
-            if stop_reason == "tool_use" and tool_handler is not None:
-                # tool_use 블록 처리
-                tool_uses = [b["toolUse"] for b in content if "toolUse" in b]
-                if not tool_uses:
-                    break  # 이상하지만 계속 진행
-
-                # assistant 메시지 추가
-                messages.append({"role": "assistant", "content": content})
-
-                # 도구 실행 후 결과 메시지 추가
-                tool_results = []
-                for tu in tool_uses:
-                    try:
-                        result_text = await tool_handler(tu["name"], tu["input"])
-                    except Exception as e:  # noqa: BLE001
-                        result_text = f"Tool error: {type(e).__name__}: {e}"
-                    tool_results.append({
-                        "toolResult": {
-                            "toolUseId": tu["toolUseId"],
-                            "content": [{"text": result_text}],
-                        }
-                    })
-
-                messages.append({"role": "user", "content": tool_results})
-                continue  # 다음 라운드
-
-            # end_turn 또는 도구 없음 — 최종 텍스트 추출
-            text_blocks = [b["text"] for b in content if "text" in b]
-            if not text_blocks:
-                raise BrokerError("Bedrock 응답에 text 블록이 없다")
-            text = text_blocks[0]
-            break
-        else:
-            raise BrokerError("tool-use 루프가 최대 횟수를 초과했다")
-
-        out = self._parse_agent_text(text, usage=usage_total or None)
+        # direct 모드에서는 로컬 검증이 유일한 검증이다.
+        # 그 사실을 감사 로그의 transport=direct 로 남긴다 (의도된 예외).
         out = out.model_copy(update={"revalidated": True})
 
         key = self._fixture_key_for(env, model_id)
