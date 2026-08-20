@@ -59,7 +59,7 @@ from mesh.exceptions import (
     ScopeViolationError,
     ValidationBlocked,
 )
-from mesh.gatekeeper import Gatekeeper
+from mesh.gatekeeper import Gatekeeper, build_system_prompt
 from mesh.inbox import Inbox
 from mesh.peer import PeerRegistry
 from mesh.rehydrator import symbols_in
@@ -93,6 +93,16 @@ DIVERGENCE_NOTE = (
 
 def new_request_id() -> str:
     return f"req_{uuid.uuid4().hex[:20]}"
+
+
+@dataclass(slots=True)
+class HubAskResult:
+    """hub_ask() 결과."""
+    question: str
+    answer: str
+    used_tool: bool
+    broadcast_results: list
+    disposition: str
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -907,6 +917,234 @@ class Orchestrator:
                 "freshness": call.freshness,
                 "session_as_of": session_as_of,
             }
+        )
+
+    # ── 허브 흐름 ────────────────────────────────────────────────────
+
+    async def hub_ask(self, question: str, asker: str) -> "HubAskResult":
+        """내 Agent (Claude) 가 허브 역할을 하는 단일 진입점.
+
+        흐름:
+          1. asker 의 지식을 읽어 Claude 에게 passthrough 페이로드 생성
+          2. Claude 에게 ask_other_agents 도구를 주고 tool-use 모드로 호출
+          3. Claude 가 스스로 판단:
+             a. 자체 지식으로 답 가능 → 바로 답변 반환
+             b. 다른 Agent 필요 → ask_other_agents 호출
+                  → tool_handler 가 broadcast 실행
+                  → 결과를 Claude 에게 tool_result 로 반환
+          4. Claude 가 최종 답변 생성
+        """
+        from mesh.agent_broadcast import TOOL_CONFIG, BroadcastService
+        from mesh.validator import passthrough_validation
+        from mesh.schemas import AgentCall, Chunk, Representation, Tier
+
+        broadcast_svc = BroadcastService(self, self.gatekeeper.exaone, self.data)
+        broadcast_results: list = []
+
+        # ── 도구 핸들러 (A2: broadcast 질의 금칙어 검사 포함) ──────────
+
+        async def tool_handler(tool_name: str, tool_input: dict) -> str:
+            if tool_name != "ask_other_agents":
+                return f"Unknown tool: {tool_name}"
+
+            sub_question = tool_input.get("question", question)
+
+            # A2: Claude 가 생성한 질문이 금칙어를 포함하는지 검사
+            try:
+                q_tier = await self.gatekeeper.classify(sub_question)
+                if q_tier.tier is Tier.SECRET:
+                    log.warning(
+                        "broadcast 질의에 기밀 내용 — 차단",
+                        extra=log_extra(asker=asker, reasons=q_tier.reasons[:2]),
+                    )
+                    return (
+                        "This question was blocked by the security gatekeeper "
+                        "because it may contain confidential information. "
+                        "Please rephrase without specific sensitive details."
+                    )
+            except Exception as e:  # noqa: BLE001
+                log.warning("broadcast 질의 등급 판정 실패", extra=log_extra(reason=str(e)))
+
+            br = await broadcast_svc.ask(
+                question=sub_question,
+                context=tool_input.get("context", ""),
+                asker=asker,
+                exclude=asker,
+            )
+            broadcast_results.append(br)
+            return br.to_tool_result_text()
+
+        # ── asker 의 지식 로드 ──────────────────────────────────────────
+
+        chunks: list[Chunk] = []
+        try:
+            session = self.store.load_session(asker)
+            paths = await self.store.select_paths(session, question)
+            chunks = self.store.read(paths, asker)
+            chunks += self.store.verified_chunks(session)
+        except Exception as e:  # noqa: BLE001
+            log.info("세션 없음 — 지식 없이 진행", extra=log_extra(reason=type(e).__name__))
+
+        # ── passthrough 페이로드 생성 (Claude 에게 넘길 컨텍스트) ────────
+
+        try:
+            from datetime import date as _date
+            from mesh.config import sha256_canonical
+
+            persona = self.data.agent(asker).to_persona()
+
+            if chunks:
+                # asker 지식을 페이로드에 담는다
+                payload: dict = {
+                    "task": "hub_ask",
+                    "question": question,
+                    "context": [
+                        {"ref": f"MY_DOC_{i+1}", "content_excerpt": c.text[:1000]}
+                        for i, c in enumerate(chunks[:3])  # 최대 3개
+                    ],
+                }
+            else:
+                payload = {"task": "hub_ask", "question": question, "context": []}
+
+            import secrets as _secrets
+            from mesh.schemas import PayloadEnvelope
+            env = PayloadEnvelope(
+                envelope_id="env_" + _secrets.token_urlsafe(18)[:22].replace("-", "A").replace("_", "B"),
+                tier=Tier.INTERNAL,
+                task_schema_id="hub_ask",
+                payload=payload,
+                representation=Representation.VERBATIM,
+                validation=passthrough_validation(),
+                payload_sha256=sha256_canonical(payload),
+                size_bytes=len(str(payload).encode()),
+            )
+
+        except Exception as e:  # noqa: BLE001
+            log.warning("hub_ask 페이로드 생성 실패 — EXAONE 폴백", extra=log_extra(reason=str(e)))
+            # 폴백: EXAONE 으로 직접 답변
+            return await self._hub_exaone_fallback(question, asker, chunks, broadcast_svc, broadcast_results)
+
+        # ── Claude tool-use 호출 ────────────────────────────────────────
+
+        # 출력 계약: JSON 강요 없이 자유 텍스트 답변
+        HUB_OUTPUT_CONTRACT = (
+            "Answer in Korean. Write a clear, helpful response.\n"
+            "If you need information from other people's agents, use the ask_other_agents tool.\n"
+            "Only use the tool if you genuinely cannot answer from the context provided.\n"
+            "Do NOT output JSON. Write a natural conversational answer."
+        )
+
+        try:
+            self.gatekeeper.check_preconditions(env, asker)
+            system_prompt = build_system_prompt(persona, env.tier, output_contract=HUB_OUTPUT_CONTRACT)
+
+            self.gatekeeper.audit.record(
+                self.gatekeeper._request_record(
+                    env, persona, asker,
+                    model_id=self.cfg.agent_model_id,
+                )
+            )
+
+            resp = await self.gatekeeper.broker.invoke(
+                env,
+                system_prompt,
+                self.cfg.agent_model_id,
+                tool_config=TOOL_CONFIG,
+                tool_handler=tool_handler,
+            )
+
+            # tool-use 응답은 answer dict 가 아닌 자유 텍스트
+            answer_text = (
+                resp.answer.get("text", "")
+                or " ".join(str(v) for v in resp.answer.values())
+            ).strip()
+
+            if not answer_text:
+                answer_text = "답변을 생성할 수 없습니다."
+
+            return HubAskResult(
+                question=question,
+                answer=answer_text,
+                used_tool=bool(broadcast_results),
+                broadcast_results=broadcast_results,
+                disposition="auto" if resp.confidence >= self.cfg.confidence_auto else "unverified",
+            )
+
+        except Exception as e:  # noqa: BLE001
+            log.warning("Claude hub_ask 실패 — EXAONE 폴백", extra=log_extra(reason=type(e).__name__))
+            return await self._hub_exaone_fallback(question, asker, chunks, broadcast_svc, broadcast_results)
+
+    async def _hub_exaone_fallback(
+        self,
+        question: str,
+        asker: str,
+        chunks: list,
+        broadcast_svc: object,
+        broadcast_results: list,
+    ) -> "HubAskResult":
+        """Claude 호출 실패 시 EXAONE 으로 폴백."""
+        from mesh.agent_broadcast import BroadcastService
+
+        if chunks:
+            try:
+                fallback = await self.gatekeeper.answer_in_zone(
+                    question, chunks, tier_label="사내", reason="open_tier_local"
+                )
+                if fallback and fallback.confidence >= self.cfg.confidence_auto:
+                    return HubAskResult(
+                        question=question,
+                        answer=fallback.text,
+                        used_tool=False,
+                        broadcast_results=[],
+                        disposition="auto",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # broadcast 폴백
+        if isinstance(broadcast_svc, BroadcastService):
+            br = await broadcast_svc.ask(question=question, context="", asker=asker, exclude=asker)
+            broadcast_results.append(br)
+            if br.answered:
+                from mesh.schemas import Chunk, Tier
+                from datetime import date as _date
+                virtual = Chunk(
+                    chunk_id="broadcast_result",
+                    entity_id=asker,
+                    text=br.to_tool_result_text(),
+                    tier=Tier.INTERNAL,
+                    display_title="broadcast 응답 취합",
+                    internal_path="broadcast/result",
+                    as_of=_date.today(),
+                    formality="official",
+                    source_kind="note",
+                )
+                try:
+                    final = await self.gatekeeper.answer_in_zone(
+                        question, [virtual], tier_label="사내", reason="open_tier_local"
+                    )
+                    return HubAskResult(
+                        question=question,
+                        answer=final.text,
+                        used_tool=True,
+                        broadcast_results=broadcast_results,
+                        disposition="auto",
+                    )
+                except Exception:  # noqa: BLE001
+                    return HubAskResult(
+                        question=question,
+                        answer=br.answered[0].answer,
+                        used_tool=True,
+                        broadcast_results=broadcast_results,
+                        disposition="unverified",
+                    )
+
+        return HubAskResult(
+            question=question,
+            answer="처리 중 오류가 발생했습니다.",
+            used_tool=False,
+            broadcast_results=broadcast_results,
+            disposition="error",
         )
 
     async def _escalate(

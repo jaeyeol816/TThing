@@ -197,26 +197,6 @@ function removeMessage(msgEl) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 헤더 상태
-// ══════════════════════════════════════════════════════════════════
-
-function renderHealth() {
-  const box = $("health-badges");
-  clear(box);
-  const h = state.health;
-  if (!h) {
-    box.appendChild(badge("연결 안 됨", "bad"));
-    return;
-  }
-  if (h.exaone_mode === "mock") {
-    box.appendChild(badge("MOCK 모드", "warn"));
-  } else {
-    box.appendChild(badge("LIVE", "ok"));
-  }
-  box.appendChild(badge(`Agent: ${h.agent_transport}`, "accent"));
-}
-
-// ══════════════════════════════════════════════════════════════════
 // 조직도 패널
 // ══════════════════════════════════════════════════════════════════
 
@@ -230,35 +210,15 @@ function renderOrgPanel() {
   }
 
   for (const a of state.agents) {
-    if (a.entity_id === state.currentUser) continue; // 자기 자신은 제외
-
-    const picked = state.selected.includes(a.entity_id);
-    const full = state.selected.length >= MAX_TARGETS && !picked;
-    const blocked = a.daily_limit_reached;
+    // currentUser(나 자신)는 조직도에 표시하지 않음
+    if (a.entity_id === state.currentUser) continue;
 
     const act = ACTIVITY[a.activity_status] || ACTIVITY.offline;
     const initial = a.display_name.charAt(0);
 
-    const card = el("button", {
+    const card = el("div", {
       class: "org-card",
-      attrs: {
-        type: "button",
-        "aria-pressed": String(picked),
-        "aria-disabled": String(blocked || full),
-        "data-testid": `org-card-${a.entity_id}`,
-      },
-      on: {
-        click: () => {
-          if (blocked || full) return;
-          if (picked) {
-            state.selected = state.selected.filter((x) => x !== a.entity_id);
-          } else if (state.selected.length < MAX_TARGETS) {
-            state.selected.push(a.entity_id);
-          }
-          renderOrgPanel();
-          refreshSendButton();
-        },
-      },
+      attrs: { "data-testid": `org-card-${a.entity_id}` },
     }, [
       el("div", { class: "org-avatar", text: initial }),
       el("div", { class: "org-info" }, [
@@ -268,8 +228,9 @@ function renderOrgPanel() {
           el("span", { class: `dot ${act.dot}` }),
           el("span", { text: act.label }),
         ]),
+        el("span", { class: "org-status-badge waiting", text: "" }),
+        el("div", { class: "org-answer-preview" }),
       ]),
-      el("div", { class: "org-check" }),
     ]);
 
     list.appendChild(card);
@@ -282,6 +243,7 @@ function renderOrgPanel() {
 
 function renderUsers() {
   const sel = $("user-select");
+  if (!sel) return;
   clear(sel);
   for (const u of state.users) {
     sel.appendChild(el("option", { text: u.display_name, attrs: { value: u.entity_id } }));
@@ -295,7 +257,7 @@ function renderUsers() {
 
 function refreshSendButton() {
   const text = $("message-input").value.trim();
-  $("send-btn").disabled = state.busy || state.selected.length === 0 || !text || text.length > MAX_QUESTION;
+  $("send-btn").disabled = state.busy || !text || text.length > MAX_QUESTION || !state.currentUser;
 }
 
 function autoResize(textarea) {
@@ -310,93 +272,105 @@ function autoResize(textarea) {
 async function doAsk() {
   const input = $("message-input");
   const question = input.value.trim();
-  if (!question || state.selected.length === 0) return;
+  if (!question || !state.currentUser) return;
 
-  // 사용자 메시지 표시
-  const targetNames = state.selected
-    .map((id) => state.agents.find((a) => a.entity_id === id))
-    .filter(Boolean)
-    .map((a) => a.display_name);
-
-  addMessage("user", question, { hint: `→ ${targetNames.join(", ")}` });
+  addMessage("user", question);
 
   input.value = "";
   autoResize(input);
   state.busy = true;
   refreshSendButton();
+  setOrgStatus("waiting");
 
   const loading = addLoadingMessage();
 
   try {
-    // 1단계: prepare
-    const prepared = await api("/api/ask/prepare", {
+    const result = await api("/api/hub/ask", {
       method: "POST",
-      body: { question, asker: state.currentUser, targets: state.selected },
+      body: { question, asker: state.currentUser },
     });
-    state.prepared = prepared;
 
-    // preview 정보를 나중에 답변 렌더링에서 사용
-    state.preparedCalls = prepared.calls;
-
-    state.fallbacks = prepared.calls.filter((c) => c.disposition === "blocked");
-    state.modalQueue = prepared.calls.filter((c) => c.disposition === "ready");
-
-    if (state.modalQueue.length === 0) {
-      // 전부 차단됨 — 신뢰 구역 내에서 답변
-      removeMessage(loading);
-      renderFallbacks();
-      return;
-    }
-
-    // 미리보기 없이 자동 승인하여 바로 전송
     removeMessage(loading);
-    for (const call of state.modalQueue) {
-      if (call.envelope_id) state.approvedIds.push(call.envelope_id);
-    }
-    state.modalQueue = [];
-    await doSend();
+    renderHubResult(result);
   } catch (err) {
     removeMessage(loading);
     addMessage("system", err.message);
+    setOrgStatus("idle");
   } finally {
     state.busy = false;
     refreshSendButton();
   }
 }
+  }
+}
 
-async function doSend() {
-  if (state.approvedIds.length === 0) {
-    // 모두 취소됨
-    if (state.fallbacks.length > 0) {
-      renderFallbacks();
-    } else {
-      addMessage("system", "전송이 취소되었습니다.");
-    }
-    return;
+function renderHubResult(result) {
+  const content = el("div");
+  content.appendChild(el("p", { text: result.answer }));
+
+  // Gatekeeper collapsible
+  content.appendChild(buildGkDetails({
+    tier: "internal",
+    disposition: result.disposition === "blocked" ? "blocked" : "ready",
+    checks: null,
+    representation: null,
+    validation_summary: null,
+  }));
+
+  const msg = addMessage("assistant", content, {
+    hint: result.used_tool ? "Agent + 조직도 참조" : "Agent",
+  });
+
+  if (result.disposition === "blocked") {
+    msg.classList.add("gk-blocked");
+  } else {
+    msg.classList.add("gk-pass");
   }
 
-  state.busy = true;
-  refreshSendButton();
-  const loading = addLoadingMessage();
+  // 조직도 상태 업데이트
+  if (result.agent_statuses && result.agent_statuses.length > 0) {
+    updateOrgStatuses(result.agent_statuses);
+  } else {
+    setOrgStatus("idle");
+  }
+}
 
-  try {
-    const result = await api("/api/ask/send", {
-      method: "POST",
-      body: {
-        request_id: state.prepared.request_id,
-        envelope_ids: state.approvedIds,
-        approved_by: state.currentUser,
-      },
-    });
-    state.result = result;
-    removeMessage(loading);
-    renderResult(result);
-  } catch (err) {
-    removeMessage(loading);
-    addMessage("system", err.message);
-  } finally {
-    state.busy = false;
-    refreshSendButton();
+function setOrgStatus(status) {
+  for (const agent of state.agents) {
+    const card = document.querySelector(`[data-testid="org-card-${agent.entity_id}"]`);
+    if (!card) continue;
+    card.className = `org-card status-${status}`;
+    const badge = card.querySelector(".org-status-badge");
+    if (badge) {
+      badge.className = `org-status-badge ${status}`;
+      badge.textContent = status === "waiting" ? "대기중" : "";
+    }
+    const preview = card.querySelector(".org-answer-preview");
+    if (preview) preview.textContent = "";
+  }
+}
+
+function updateOrgStatuses(statuses) {
+  const byId = {};
+  for (const s of statuses) byId[s.entity_id] = s;
+
+  for (const agent of state.agents) {
+    const card = document.querySelector(`[data-testid="org-card-${agent.entity_id}"]`);
+    if (!card) continue;
+    const s = byId[agent.entity_id];
+    const status = s ? s.status : "skipped";
+    card.className = `org-card status-${status}`;
+
+    const badge = card.querySelector(".org-status-badge");
+    if (badge) {
+      badge.className = `org-status-badge ${status}`;
+      const labels = { answered: "답변", skipped: "해당없음", waiting: "대기중", error: "오류" };
+      badge.textContent = labels[status] || status;
+    }
+    const preview = card.querySelector(".org-answer-preview");
+    if (preview && s && s.answer) {
+      preview.textContent = s.answer.slice(0, 80) + (s.answer.length > 80 ? "…" : "");
+    }
   }
 }
 
@@ -837,9 +811,7 @@ function wire() {
   wireProtocol();
 
   const input = $("message-input");
-  const sendBtn = $("send-btn");
-
-  input.addEventListener("input", () => {
+  const sendBtn = $("send-btn");  input.addEventListener("input", () => {
     autoResize(input);
     refreshSendButton();
   });
@@ -853,13 +825,6 @@ function wire() {
 
   sendBtn.addEventListener("click", doAsk);
 
-  $("user-select").addEventListener("change", (e) => {
-    state.currentUser = e.target.value;
-    state.selected = state.selected.filter((x) => x !== state.currentUser);
-    renderOrgPanel();
-    refreshSendButton();
-  });
-
   $("preview-send").addEventListener("click", onPreviewSend);
   $("preview-cancel").addEventListener("click", onPreviewCancel);
   $("preview-modal").addEventListener("cancel", (e) => { e.preventDefault(); onPreviewCancel(); });
@@ -872,20 +837,12 @@ function wire() {
 async function boot() {
   wire();
 
-  // 상태 로드
-  try {
-    state.health = await api("/api/health");
-  } catch { state.health = null; }
-  renderHealth();
-
-  // 사용자 로드
   try {
     state.users = await api("/api/users");
     if (state.users.length > 0) state.currentUser = state.users[0].entity_id;
   } catch { state.users = []; }
   renderUsers();
 
-  // 에이전트 로드
   try {
     state.agents = await api("/api/agents");
   } catch { state.agents = []; }

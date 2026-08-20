@@ -696,3 +696,29 @@ class PeerAnswer(BaseModel):
     answer: RehydratedAnswer
     escalated: bool = False
     escalation_note: str | None = None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 허브 Ask API
+# ══════════════════════════════════════════════════════════════════════
+
+
+class AgentStatusView(BaseModel):
+    entity_id: str
+    agent_label: str
+    status: Literal["waiting", "answered", "skipped", "error"]
+    answer: str = ""
+    confidence: float = 0.0
+
+
+class HubAskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    asker: str = Field(pattern=ENTITY_ID_PATTERN)
+
+
+class HubAskResponse(BaseModel):
+    question: str
+    answer: str
+    used_tool: bool = False
+    disposition: str = "auto"
+    agent_statuses: list[AgentStatusView] = Field(default_factory=list)

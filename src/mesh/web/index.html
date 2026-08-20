@@ -18,14 +18,6 @@
         <span class="brand-name">MIA</span>
         <span class="brand-sub">담당자가 자리에 없어도 답은 나온다</span>
       </div>
-      <div class="header-badges" id="health-badges" aria-live="polite">
-        <span class="badge badge-muted">상태 확인 중…</span>
-      </div>
-      <button type="button" class="btn btn-sm protocol-btn" id="protocol-btn"
-              title="보안 프로토콜 관리">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        보안 프로토콜
-      </button>
     </header>
 
     <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
@@ -51,20 +43,12 @@
   <aside class="org-panel">
     <div class="org-header">
       <h2 class="org-title">조직도</h2>
-      <span class="org-subtitle">질문할 대상을 선택하세요</span>
+      <span class="org-subtitle" id="org-subtitle">Agent 에게 질문하면 자동으로 전달됩니다</span>
     </div>
 
     <div class="org-list" id="org-list" data-testid="org-list">
-      <!-- JS가 채운다 -->
     </div>
 
-    <div class="org-footer">
-      <div class="whoami">
-        <label class="whoami-label" for="user-select">현재 사용자</label>
-        <select id="user-select" data-testid="user-select"></select>
-        <span class="whoami-note">데모용 전환</span>
-      </div>
-    </div>
   </aside>
 
 </div>
