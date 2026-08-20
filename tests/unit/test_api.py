@@ -142,7 +142,7 @@ def test_correlation_id_is_echoed(client):
 def test_non_localhost_bind_is_refused(full_cfg):
     """경고만 하면 아무도 읽지 않는다. 시작을 막는다."""
     cfg = dataclasses.replace(full_cfg, bind_host="0.0.0.0")  # noqa: S104
-    with pytest.raises(MeshError, match="권한 우회"):
+    with pytest.raises(MeshError, match="MESH_ALLOW_NETWORK_BIND"):
         check_bind_host(cfg, allow_network=False)
 
 

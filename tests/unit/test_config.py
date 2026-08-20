@@ -276,12 +276,104 @@ def test_now_without_override_is_live(base_env):
     assert (datetime.now().astimezone() - cfg.now()).total_seconds() < 5
 
 
-def test_non_localhost_bind_warns_but_loads(base_env, monkeypatch, caplog):
+# ══════════════════════════════════════════════════════════════════════
+# LAN 모드 — 같은 네트워크의 다른 컴퓨터
+# ══════════════════════════════════════════════════════════════════════
+#
+# 이 서비스는 원문 파일을 읽고 **재수화된 실제 이름**을 반환한다. 네트워크에
+# 노출하는 순간 토큰이 유일한 접근 통제가 된다. 그래서 경고가 아니라 **거부**다.
+
+VALID_TOKEN = "x" * 32
+
+
+def test_lan_mode_without_token_is_refused(base_env, monkeypatch):
+    """**경고가 아니라 시작 거부다.** 경고는 아무도 읽지 않는다."""
     monkeypatch.setenv("MESH_BIND_HOST", "0.0.0.0")
+    with pytest.raises(ConfigError, match="MESH_PEER_TOKEN"):
+        Config.load()
+
+
+def test_lan_mode_rejects_a_short_token(base_env, monkeypatch):
+    """LAN 에서는 시도 횟수 제한이 없다 — 짧은 토큰은 없는 것과 같다."""
+    monkeypatch.setenv("MESH_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("MESH_PEER_TOKEN", "short")
+    with pytest.raises(ConfigError, match="너무 짧다"):
+        Config.load()
+
+
+def test_lan_mode_loads_with_a_token(base_env, monkeypatch, caplog):
+    monkeypatch.setenv("MESH_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("MESH_PEER_TOKEN", VALID_TOKEN)
     with caplog.at_level(logging.WARNING, logger="mesh.config"):
         cfg = Config.load()
     assert cfg.bind_host == "0.0.0.0"
-    assert any("권한 우회" in r.message for r in caplog.records)
+    assert cfg.lan_mode is True
+    # 소유자 표면이 여전히 loopback 전용임을 로그로 밝힌다
+    assert any("loopback 전용" in r.message for r in caplog.records)
+
+
+def test_localhost_does_not_need_a_token(base_env):
+    cfg = Config.load()
+    assert cfg.lan_mode is False
+    assert cfg.peer_token is None
+
+
+def test_lan_mode_is_decided_by_bind_host_not_peer_list(base_env, monkeypatch):
+    """피어 목록이 비어도 **누가 나를 부를 수는** 있다.
+
+    목록 유무로 판단하면 "나는 아무에게도 안 묻는다"가
+    "아무도 나에게 못 묻는다"로 잘못 읽힌다.
+    """
+    monkeypatch.setenv("MESH_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("MESH_PEER_TOKEN", VALID_TOKEN)
+    cfg = Config.load()
+    assert cfg.peers == ()
+    assert cfg.lan_mode is True
+
+
+def test_node_name_defaults_to_hostname(base_env):
+    cfg = Config.load()
+    assert cfg.node_name
+    assert "." not in cfg.node_name, "짧은 호스트명을 쓴다"
+
+
+def test_node_name_can_be_overridden(base_env, monkeypatch):
+    monkeypatch.setenv("MESH_NODE_NAME", "김책임-맥북")
+    assert Config.load().node_name == "김책임-맥북"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", ()),
+        ("http://192.168.0.11:8080", ("http://192.168.0.11:8080",)),
+        ("http://a:8080/", ("http://a:8080",)),
+        ("http://a:8080, http://b:8080", ("http://a:8080", "http://b:8080")),
+        ("http://a:8080,http://a:8080", ("http://a:8080",)),
+        ("http://a:8080;http://b:8080", ("http://a:8080", "http://b:8080")),
+        ("  ,  ", ()),
+    ],
+    ids=["빈값", "한개", "끝슬래시", "여러개", "중복제거", "세미콜론", "공백만"],
+)
+def test_peer_list_parsing(base_env, monkeypatch, raw: str, expected: tuple[str, ...]):
+    monkeypatch.setenv("MESH_PEERS", raw)
+    assert Config.load().peers == expected
+
+
+def test_peer_without_scheme_is_refused(base_env, monkeypatch):
+    """스킴이 없으면 상대 경로로 해석되어 **조용히 자기 자신을 부른다.**
+
+    그러면 "피어에 물었는데 내 답이 왔다"가 되고, 그것을 알아차릴 방법이 없다.
+    """
+    monkeypatch.setenv("MESH_PEERS", "192.168.0.11:8080")
+    with pytest.raises(ConfigError, match="스킴이 없다"):
+        Config.load()
+
+
+def test_too_many_peers_is_refused(base_env, monkeypatch):
+    monkeypatch.setenv("MESH_PEERS", ",".join(f"http://h{i}:8080" for i in range(20)))
+    with pytest.raises(ConfigError, match="너무 많다"):
+        Config.load()
 
 
 # ══════════════════════════════════════════════════════════════════════

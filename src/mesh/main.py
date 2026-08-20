@@ -30,6 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import secrets
+import shlex
+import socket
+import sys
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -39,6 +44,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import ValidationError
 
+from mesh import __version__
 from mesh.agent import AgentClient
 from mesh.api_models import (
     MAX_SEARCH_CHARS,
@@ -52,12 +58,20 @@ from mesh.api_models import (
     HealthStatus,
     InboxItem,
     MergedRulesView,
+    PeerAnswer,
+    PeerIdentity,
+    PeerNodeView,
+    PeerPreparedCall,
+    PeerPrepareRequest,
+    PeerSendRequest,
+    PeerStatus,
     PrepareResult,
     PresetQuestion,
     ProtocolUpsertRequest,
     ProtocolView,
     ResolveRequest,
     SendRequest,
+    StorageInfo,
     UploadRequest,
     UploadResult,
     UserView,
@@ -78,6 +92,7 @@ from mesh.gatekeeper import Gatekeeper
 from mesh.inbox import Inbox
 from mesh.llm.exaone import ExaoneClient
 from mesh.orchestrator import Orchestrator
+from mesh.peer import PeerClient, PeerRegistry
 from mesh.store import KnowledgeStore
 
 log = get_logger("main")
@@ -147,6 +162,29 @@ class Services:
         self.agent = AgentClient(cfg, self.gatekeeper, audit=self.audit)
         self.inbox = Inbox(cfg, self.audit)
         self.documents = DocumentService(cfg, self.data, self.store, self.gatekeeper)
+
+        # ── 피어 메시 ────────────────────────────────────────────────
+        #
+        # ⚠️ `peers` 가 비어 있으면 레지스트리를 만들지 않는다 (`None`).
+        #    빈 레지스트리를 넘기면 `Orchestrator` 가 매 질문마다 "원격인가"를
+        #    묻는 코드 경로를 타고, 단독 노드에서 쓰지 않는 분기가 항상 돈다.
+        #    `None` 이면 그 분기가 아예 없다 — 단독 동작이 기본값이라는 사실이
+        #    타입에 드러난다.
+        self.peer_client = PeerClient(cfg) if cfg.peers or cfg.lan_mode else None
+        self.peers = (
+            PeerRegistry(cfg, self.peer_client, local_ids=frozenset(self.data.agents))
+            if self.peer_client and cfg.peers
+            else None
+        )
+        #: 피어가 발급받은 `envelope_id` -> 이 노드의 `request_id`.
+        #:
+        #: 왜 이 사상이 필요한가: 두 노드가 `request_id` 공간을 공유하면 충돌하고,
+        #: 충돌하면 남의 준비 결과를 전송할 수 있다. 질문자는 `envelope_id` 만
+        #: 들고 다시 오고, 이 노드가 그것으로 자기 pending 을 찾는다.
+        #: `EnvelopeCache` 와 `PendingRequest` 가 이미 TTL 로 만료되므로
+        #: 여기 남은 항목은 만료된 키를 가리키고 `send` 가 410 을 낸다.
+        self.peer_pending: dict[str, str] = {}
+
         self.orchestrator = Orchestrator(
             cfg,
             self.data,
@@ -155,18 +193,28 @@ class Services:
             self.agent,
             self.audit,
             self.inbox,
+            peers=self.peers,
         )
 
     async def aclose(self) -> None:
-        for closer in (self.exaone, self.gatekeeper.broker):
+        for closer in (self.exaone, self.gatekeeper.broker, self.peer_client):
             aclose = getattr(closer, "aclose", None)
             if aclose is not None:
                 await aclose()
         self.audit.close()
 
 
-def check_bind_host(cfg: Config, *, allow_network: bool) -> None:
+def check_bind_host(cfg: Config, *, allow_network: bool | None = None) -> None:
     """localhost 가 아니면 명시적 확인을 요구한다 (BR-M-01).
+
+    LAN 모드에는 관문이 **두 개**다.
+
+      ① `MESH_PEER_TOKEN` — `Config.validate()` 가 강제한다. 실제 접근 통제다
+      ② `MESH_ALLOW_NETWORK_BIND=1` — 여기서 강제한다. 의도 확인이다
+
+    둘을 겹치는 이유: 토큰이 있다는 것은 "보호했다"이고, 플래그는 "노출을
+    의도했다"다. 다른 사실이다. 토큰을 넣어 둔 채로 무심히 `0.0.0.0` 을
+    설정하는 일이 실제로 생긴다.
 
     Raises:
         MeshError: 확인 없이 네트워크에 노출하려 할 때. **시작을 막는다** —
@@ -174,19 +222,21 @@ def check_bind_host(cfg: Config, *, allow_network: bool) -> None:
     """
     if cfg.bind_host in _LOCALHOSTS:
         return
-    if allow_network:
+    if allow_network if allow_network is not None else cfg.allow_network_bind:
         log.warning(
-            "네트워크 바인딩을 명시적으로 허용했다. 이 서비스는 인증이 없고 "
-            "재수화된 실제 이름을 반환한다 — 신뢰된 네트워크에서만 쓰라",
-            extra=log_extra(bind_host=cfg.bind_host),
+            "네트워크 바인딩을 명시적으로 허용했다. 원격 출처는 /api/peer/* 만 "
+            "접근할 수 있고 피어 토큰이 필요하다. 소유자 표면(문서 목록·감사 로그·"
+            "저장 경로)은 loopback 전용이다",
+            extra=log_extra(bind_host=cfg.bind_host, node_name=cfg.node_name),
         )
         return
     raise MeshError(
         f"MESH_BIND_HOST={cfg.bind_host} 는 localhost 가 아니다. "
-        "이 서비스는 원문 파일을 읽고 재수화된 실제 이름을 반환하며 인증이 없다. "
-        "네트워크에 노출하면 권한 우회 도구가 된다 (BR-M-01).\n"
+        "이 서비스는 원문 파일을 읽고 재수화된 실제 이름을 반환한다. "
+        "네트워크 노출은 의도를 명시해야 한다 (BR-M-01).\n"
         "  -> MESH_BIND_HOST=127.0.0.1 로 실행하라\n"
-        "  -> 의도한 것이라면 MESH_ALLOW_NETWORK_BIND=1 을 함께 지정하라"
+        "  -> 여러 컴퓨터로 쓰려는 것이라면 MESH_ALLOW_NETWORK_BIND=1 을 함께 지정하라\n"
+        "     (MESH_PEER_TOKEN 도 필요하다 — 참여하는 모든 컴퓨터에 같은 값)"
     )
 
 
@@ -197,11 +247,9 @@ def check_bind_host(cfg: Config, *, allow_network: bool) -> None:
 
 def create_app(cfg: Config | None = None, *, services: Services | None = None) -> FastAPI:
     """앱을 만든다. 테스트는 `services` 를 주입해 대역을 쓴다."""
-    import os
-
     cfg = cfg or Config.load()
     setup_logging("DEBUG" if cfg.dev_mode else "INFO")
-    check_bind_host(cfg, allow_network=os.environ.get("MESH_ALLOW_NETWORK_BIND", "") == "1")
+    check_bind_host(cfg)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -243,11 +291,100 @@ def create_app(cfg: Config | None = None, *, services: Services | None = None) -
 Handler = Callable[[Request], Awaitable[Response]]
 
 
+#: 원격 피어가 접근할 수 있는 유일한 경로 접두사.
+PEER_PREFIX = "/api/peer/"
+
+#: 피어 토큰을 실어 보내는 헤더.
+PEER_TOKEN_HEADER = "X-Mesh-Peer-Token"  # noqa: S105 — 헤더 **이름**이다. 비밀은 값이고 이 파일에 없다
+
+#: 토큰 없이도 원격에서 부를 수 있는 경로. **식별 정보만** 돌려준다.
+#:
+#: 왜 하나를 열어 두는가: 화면의 피어 목록이 "연결됨/응답 없음/토큰 불일치"를
+#: 구분해 보여줘야 한다. 전부 막으면 토큰이 틀린 것과 노드가 꺼진 것이 같아 보이고,
+#: 사람이 원인을 짐작하게 된다. 이 경로는 노드 이름과 버전만 준다 —
+#: 사람 목록도, 문서도, 경로도 없다.
+PEER_OPEN_PATHS = frozenset({"/api/peer/hello"})
+
+
+def is_loopback(request: Request) -> bool:
+    """요청이 이 컴퓨터에서 왔는가.
+
+    `request.client` 가 `None` 인 경우(테스트 전송·유닉스 소켓)는 **로컬로 본다** —
+    `TestClient` 가 그렇고, 그 경로는 네트워크를 타지 않는다.
+
+    ⚠️ `X-Forwarded-For` 를 보지 않는다. 이 서비스 앞에 프록시를 두지 않으므로
+       그 헤더는 오직 **공격자가 심는 값**이다. 신뢰하면 게이팅이 무의미해진다.
+    """
+    client = request.client
+    if client is None or not client.host:
+        return True
+    return client.host in _LOCALHOSTS or client.host == "::ffff:127.0.0.1"
+
+
 def _install_middleware(app: FastAPI) -> None:
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
     # ⚠️ CORS 미들웨어를 추가하지 않는다 (BR-M-04). 동일 출처만 허용한다.
     #    와일드카드 `*` 는 이 서비스에서 곧 데이터 유출이다.
+
+    @app.middleware("http")
+    async def _origin_gate(request: Request, call_next: Handler) -> Response:
+        """원격 출처는 `/api/peer/*` 만, 그리고 토큰이 있어야 한다.
+
+        ──────────────────────────────────────────────────────────────
+        표면이 두 개다
+        ──────────────────────────────────────────────────────────────
+
+        | 표면 | 누가 | 무엇 |
+        |---|---|---|
+        | 소유자 표면 | loopback 만 | 화면 · 문서 목록 · **저장 경로** · 감사 로그 · 업로드 |
+        | 피어 표면 | 토큰을 가진 LAN | `/api/peer/*` — 지목 목록 · prepare · send |
+
+        포트를 둘로 나누지 않고 미들웨어로 가른 이유: uvicorn 을 두 번 띄우면
+        `make run` 이 복잡해지고 감사 DB 를 두 프로세스가 열게 된다. 출처로
+        가르는 것이 30줄이고 같은 성질을 준다.
+
+        **소유자 표면이 loopback 전용인 것이 중요하다.** 그쪽에는 절대 경로와
+        업로드 삭제와 원문 검색이 있다. 피어에게 필요한 것은 "질문에 답하는 것"
+        뿐이고, 그건 게이트키퍼를 지난 결과다.
+        """
+        cfg: Config = request.app.state.cfg
+        # loopback 에 바인딩했으면 **원격 출처가 존재할 수 없다.** 커널이 외부
+        # 패킷을 전달하지 않는다. 그때 출처를 따지는 것은 비용만 늘리고,
+        # 프록시 헤더 같은 것을 신뢰하고 싶은 유혹을 만든다.
+        if not cfg.lan_mode or is_loopback(request):
+            return await call_next(request)
+
+        path = request.url.path
+
+        if not path.startswith(PEER_PREFIX):
+            log.warning(
+                "원격 출처가 소유자 표면에 접근하려 했다",
+                extra=log_extra(path=path, source="remote"),
+            )
+            # 404 가 아니라 403 이다. 경로가 있다는 것은 이미 알려진 사실이고,
+            # 숨기려다 "왜 안 되지?" 를 만드는 편이 더 나쁘다.
+            return _error(403, "peer_forbidden", "이 경로는 이 컴퓨터에서만 쓸 수 있습니다")
+
+        if path in PEER_OPEN_PATHS:
+            return await call_next(request)
+
+        supplied = request.headers.get(PEER_TOKEN_HEADER, "")
+        expected = cfg.peer_token or ""
+        # ⚠️ 상수 시간 비교. 문자열 `==` 는 앞에서 갈리면 빨리 끝나므로
+        #    LAN 에서 반복 시도로 한 글자씩 맞출 수 있다.
+        if not expected or not secrets.compare_digest(supplied, expected):
+            log.warning(
+                "피어 토큰 불일치",
+                extra=log_extra(path=path, supplied_len=len(supplied)),
+            )
+            return _error(
+                403,
+                "peer_token_invalid",
+                "피어 토큰이 일치하지 않습니다. 참여하는 모든 컴퓨터에 같은 "
+                "MESH_PEER_TOKEN 을 넣었는지 확인해 주세요",
+            )
+        return await call_next(request)
 
     @app.middleware("http")
     async def _security_headers(request: Request, call_next: Handler) -> Response:
@@ -356,6 +493,64 @@ def _field_summary(errors: list[dict[str, object]]) -> str:
     if len(errors) > MAX_ERROR_FIELDS:
         parts.append(f"(그 밖에 {len(errors) - MAX_ERROR_FIELDS}건)")
     return "요청 형식이 올바르지 않습니다 — " + "; ".join(parts)
+
+
+def _reveal_command(path: Path) -> str | None:
+    """이 컴퓨터에서 폴더를 열 명령. 화면이 그대로 보여 준다.
+
+    실행하지 않는다 — **문자열만 준다.** 서버가 `open` 을 실행하면 원격에서
+    임의 경로를 열게 만들 수 있고, 그건 이 프로젝트가 감당할 위험이 아니다.
+    사람이 복사해서 자기 터미널에 붙이는 것으로 충분하다.
+    """
+    quoted = shlex.quote(str(path))
+    if sys.platform == "darwin":
+        return f"open {quoted}"
+    if sys.platform.startswith("linux"):
+        return f"xdg-open {quoted}"
+    if sys.platform.startswith("win"):
+        return f"explorer {quoted}"
+    return None
+
+
+def _advertised_host(cfg: Config) -> str:
+    """다른 컴퓨터에 알려 줄 주소.
+
+    `0.0.0.0` 은 "모든 인터페이스" 라는 뜻이고 **접속 주소가 아니다.** 그대로
+    보여주면 사람이 그것을 복사해 `MESH_PEERS` 에 넣고 실패한다.
+    실제 LAN IP 를 찾아 준다.
+    """
+    if cfg.bind_host not in {"0.0.0.0", "::", ""}:  # noqa: S104
+        return cfg.bind_host
+    # 외부로 나가는 소켓을 만들어(패킷은 보내지 않는다) 커널이 고른 로컬 주소를 읽는다.
+    # `gethostbyname(gethostname())` 은 macOS 에서 127.0.0.1 을 주는 일이 잦다.
+    with contextlib.suppress(OSError):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(0.1)
+            probe.connect(("192.0.2.1", 9))  # TEST-NET-1. 라우팅만 해석된다
+            return str(probe.getsockname()[0])
+    return cfg.bind_host or "127.0.0.1"
+
+
+def _peer_hint(cfg: Config, views: tuple[PeerNodeView, ...]) -> str | None:
+    """사람이 다음에 무엇을 해야 하는지. 상태만 보여주면 고칠 수 없다."""
+    if not cfg.lan_mode:
+        return (
+            "지금은 이 컴퓨터에서만 동작합니다. 같은 네트워크의 다른 컴퓨터와 "
+            "연결하려면 MESH_BIND_HOST=0.0.0.0 · MESH_ALLOW_NETWORK_BIND=1 · "
+            "MESH_PEER_TOKEN 을 설정하고 다시 시작해 주세요"
+        )
+    if not cfg.peers:
+        return (
+            f"이 노드는 {_advertised_host(cfg)}:{cfg.bind_port} 에서 기다리고 있습니다. "
+            "다른 컴퓨터의 주소를 MESH_PEERS 에 적으면 그쪽 사람에게도 물을 수 있습니다"
+        )
+    if any(v.status == "token_invalid" for v in views):
+        return "피어 토큰이 다릅니다. 참여하는 모든 컴퓨터에 같은 MESH_PEER_TOKEN 을 넣어 주세요"
+    if any(v.status == "self" for v in views):
+        return "MESH_PEERS 에 이 노드 자신이 들어 있습니다. 빼 주세요"
+    if all(v.status != "connected" for v in views):
+        return "연결된 노드가 없습니다. 상대 컴퓨터에서 서버가 떠 있는지 확인해 주세요"
+    return None
 
 
 def _error(status: int, code: str, detail: str | None) -> JSONResponse:
@@ -472,6 +667,171 @@ def _install_routes(app: FastAPI) -> None:
         if not deleted:
             raise HTTPException(status_code=404, detail="업로드한 문서가 아닙니다")
         return {"deleted": True}
+
+    # ── 저장 위치 (loopback 전용) ────────────────────────────────────
+
+    @app.get("/api/storage", response_model=StorageInfo)
+    async def storage(
+        request: Request, owner: str | None = Query(default=None, max_length=64)
+    ) -> StorageInfo:
+        """파일이 **실제로 어디에 있는가.**
+
+        이 프로젝트의 주장은 "원문이 경계를 넘지 않는다" 다. 그 주장을 확인하는
+        가장 직접적인 방법은 파일을 파인더에서 열어 보는 것이고, 그러려면 경로를
+        알아야 한다. 경로를 숨기면 주장을 검증할 수 없다.
+
+        ⚠️ **loopback 전용이다.** 절대 경로는 사용자 이름과 디렉터리 구조를 담는다.
+           `_origin_gate` 가 원격 출처를 막는다 (`/api/peer/*` 만 허용).
+        """
+        svc = _services(request)
+        cfg = svc.cfg
+        configured = os.environ.get("MESH_DATA_ROOT", "./data")
+        root = cfg.data_root.resolve()
+
+        my_uploads: Path | None = None
+        if owner and owner in svc.data.agents:
+            my_uploads = svc.store.uploads_dir(owner).resolve()
+
+        target = my_uploads or cfg.uploads_root.resolve()
+        return StorageInfo(
+            data_root=str(root),
+            uploads_root=str(cfg.uploads_root.resolve()),
+            my_uploads=str(my_uploads) if my_uploads else None,
+            audit_db=str(cfg.db_path.resolve()),
+            sessions_root=str(cfg.sessions_root.resolve()),
+            configured_relative=not Path(configured).is_absolute(),
+            configured_value=configured,
+            exists=target.is_dir(),
+            reveal_command=_reveal_command(target),
+        )
+
+    # ── 피어 메시 ────────────────────────────────────────────────────
+    #
+    # `/api/peers` 는 **loopback 전용** (내 화면이 노드 상태를 본다).
+    # `/api/peer/*` 는 **원격이 부르는 것** (토큰 필요, `/hello` 만 예외).
+    #
+    # 이름이 비슷해 헷갈리기 쉬우므로 규칙을 하나로 정한다:
+    #   복수형 `peers` = 내가 남을 본다 · 단수형 `peer` = 남이 나를 본다
+
+    @app.get("/api/peers", response_model=PeerStatus)
+    async def peers(request: Request) -> PeerStatus:
+        """설정된 피어 노드의 상태. **loopback 전용.**
+
+        상태를 네 가지로 나눈다 (`connected`/`unreachable`/`token_invalid`/`self`) —
+        전부 "실패" 로 뭉치면 사람이 원인을 짐작해야 한다. 토큰이 틀린 것과
+        노드가 꺼진 것은 고치는 방법이 다르다.
+        """
+        svc = _services(request)
+        cfg = svc.cfg
+        views = await svc.peer_client.probe_all() if svc.peer_client else ()
+        return PeerStatus(
+            node_name=cfg.node_name,
+            lan_mode=cfg.lan_mode,
+            listen_url=f"http://{_advertised_host(cfg)}:{cfg.bind_port}",
+            peer_token_set=bool(cfg.peer_token),
+            peers=views,
+            hint=_peer_hint(cfg, views),
+        )
+
+    @app.get("/api/peer/hello", response_model=PeerIdentity)
+    async def peer_hello(request: Request) -> PeerIdentity:
+        """토큰 없이 답하는 유일한 피어 경로.
+
+        ⚠️ **사람 목록·문서·경로를 담지 않는다.** 토큰 없이 답하므로 담는 순간
+           인증 없는 정보 공개가 된다. 노드 이름과 개수까지만이다.
+
+        하나를 열어 두는 이유: 화면이 "응답 없음" 과 "토큰 불일치" 를 구분해
+        보여줘야 한다. 전부 막으면 두 원인이 같아 보이고 사람이 짐작하게 된다.
+        """
+        svc = _services(request)
+        return PeerIdentity(
+            node_name=svc.cfg.node_name,
+            version=__version__,
+            peer_ready=bool(svc.cfg.peer_token),
+            agent_count=len(svc.data.agents),
+        )
+
+    @app.get("/api/peer/agents", response_model=list[AgentCardView])
+    async def peer_agents(request: Request) -> list[AgentCardView]:
+        """이 노드의 지목 목록. **`node_name` 을 여기서 찍는다.**
+
+        질문자 쪽에서 찍으면 URL 밖에 모른다. 사람이 읽을 이름이 필요하다.
+
+        ⚠️ 로컬 목록만 준다 (`store.list_agents`). `orchestrator.agent_cards()`
+           를 부르면 그 노드가 자기 피어까지 합쳐 돌려주고, 그러면 A→B→C 를
+           거쳐 같은 사람이 두 번 나오거나 순환이 생긴다. **한 홉만 간다.**
+        """
+        svc = _services(request)
+        cards = await svc.store.list_agents()
+        node = svc.cfg.node_name
+        return [AgentCardView.model_validate({**c.model_dump(), "node_name": node}) for c in cards]
+
+    @app.post("/api/peer/prepare", response_model=PeerPreparedCall)
+    async def peer_prepare(request: Request, body: PeerPrepareRequest) -> PeerPreparedCall:
+        """다른 컴퓨터가 "이 질문을 네 Agent 에게 준비해 달라" 고 청한다.
+
+        **이 노드가 자기 원문을 읽고 판정·조립·검증을 한다.** 질문자에게 가는
+        것은 미리보기(구조 페이로드 전문 + 검증 결과)이고, 원문은 가지 않는다.
+
+        `agents_notified=False` 는 여기서도 유지된다 (BR-O-03) — prepare 는
+        이 노드의 인박스에도 아무것도 쓰지 않는다.
+        """
+        svc = _services(request)
+        if body.target not in svc.data.agents:
+            raise HTTPException(status_code=404, detail="이 노드에 없는 사람입니다")
+        log.info(
+            "피어 prepare 요청",
+            extra=log_extra(asker_node=body.asker_node, asker=body.asker, target=body.target),
+        )
+        prepared = await svc.orchestrator.prepare(
+            AskRequest(asker=body.asker, question=body.question, targets=[body.target])
+        )
+        call = prepared.calls[0]
+        # ⚠️ `request_id` 를 질문자에게 알려 주지 않는다. 질문자는 `envelope_id`
+        #    만 들고 다시 오고, 이 노드가 그것으로 자기 pending 을 찾는다.
+        #    두 노드가 같은 id 공간을 공유하면 충돌하고, 충돌하면 남의 준비
+        #    결과를 전송할 수 있다.
+        svc.peer_pending[call.envelope_id or f"blocked_{body.target}"] = prepared.request_id
+        return PeerPreparedCall(node_name=svc.cfg.node_name, call=call)
+
+    @app.post("/api/peer/send", response_model=PeerAnswer)
+    async def peer_send(request: Request, body: PeerSendRequest) -> PeerAnswer:
+        """승인 후 전송. **이 노드가 경계를 넘고, 이 노드에 기록이 남는다.**
+
+        원문을 가진 쪽에 감사 레코드가 남는 것이 맞다 — "무엇이 경계를 넘었나"는
+        원문을 가진 사람이 증명해야 하고, 증거가 남의 컴퓨터에 있으면 증명이
+        성립하지 않는다.
+
+        에스컬레이션도 이 노드의 인박스에 만들어진다. 담당자가 이 컴퓨터에 있다.
+        """
+        svc = _services(request)
+        local_request_id = svc.peer_pending.pop(body.envelope_id, None)
+        if local_request_id is None:
+            raise GatekeeperError(
+                f"준비된 요청을 찾을 수 없다 (TTL 만료 또는 이미 전송됨): {body.envelope_id}"
+            )
+        result = await svc.orchestrator.send(local_request_id, [body.envelope_id], body.approved_by)
+        answer = result.merged.answers[0]
+        escalated = bool(result.escalations)
+        log.info(
+            "피어 send 완료",
+            extra=log_extra(
+                asker_node=body.asker_node,
+                target=answer.entity_id,
+                escalated=escalated,
+            ),
+        )
+        return PeerAnswer(
+            node_name=svc.cfg.node_name,
+            answer=answer,
+            escalated=escalated,
+            escalation_note=(
+                f"{answer.agent_label} 의 담당자에게 확인을 요청했습니다 "
+                f"({svc.cfg.node_name} 의 인박스)"
+                if escalated
+                else None
+            ),
+        )
 
     # ── 사용자 · 질문 프리셋 ─────────────────────────────────────────
 

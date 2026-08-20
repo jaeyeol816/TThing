@@ -279,6 +279,10 @@ LAYERS: dict[str, int] = {
     "mesh.store": 5,
     "mesh.agent": 5,
     "mesh.inbox": 5,
+    # 피어 노드 클라이언트. `api_models`(L1) + `config`(L0) 만 쓴다.
+    # store·gatekeeper 를 쓰지 않는 것이 중요하다 — 이 모듈은 남의 지식을
+    # 다루지 않고, HTTP 로 청해서 받은 것을 위로 넘긴다.
+    "mesh.peer": 5,
     "mesh.orchestrator": 6,
     "mesh.documents": 6,
     "mesh.main": 7,

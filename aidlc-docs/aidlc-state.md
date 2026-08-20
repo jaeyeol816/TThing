@@ -1,7 +1,7 @@
 # AI-DLC State Tracking
 
 ## Project Information
-- **Project Name**: 대리 에이전트 메시 (Delegate Agent Mesh)
+- **Project Name**: MIA; But AI got you  (구 '대리 에이전트 메시'. 패키지 경로 `mesh` 는 유지)
 - **Project Type**: Greenfield
 - **Start Date**: 2026-08-19T00:00:00Z
 - **Last Updated**: 2026-08-20T15:10:00Z

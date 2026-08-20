@@ -43,6 +43,8 @@ from mesh.api_models import (
     AskRequest,
     AskResult,
     MergedAnswer,
+    PeerPrepareRequest,
+    PeerSendRequest,
     PreparedCall,
     PrepareResult,
     SubQuestionView,
@@ -59,6 +61,7 @@ from mesh.exceptions import (
 )
 from mesh.gatekeeper import Gatekeeper
 from mesh.inbox import Inbox
+from mesh.peer import PeerRegistry
 from mesh.rehydrator import symbols_in
 from mesh.schemas import (
     AgentCard,
@@ -270,9 +273,20 @@ class PendingCall:
     target_entity_id: str
     chunks: list[Chunk]
     session_facts: tuple[str, ...]
-    freshness: Freshness
+    freshness: Freshness | None
     confidence_factor: float
     sub_question_id: str | None = None
+    #: 대상이 다른 컴퓨터에 있으면 그 노드의 base_url. 로컬이면 `None`.
+    #:
+    #: `send` 가 이 값으로 갈린다. 로컬이면 `EnvelopeCache` 에서 봉투를 꺼내고,
+    #: 원격이면 그 노드에 "이제 보내 달라" 고 청한다 — 봉투는 그쪽에 있다.
+    remote_node: str | None = None
+    #: 사람이 읽을 노드 이름. 화면과 로그에 쓴다.
+    remote_node_name: str | None = None
+
+    @property
+    def is_remote(self) -> bool:
+        return self.remote_node is not None
 
 
 @dataclass(slots=True)
@@ -311,6 +325,7 @@ class Orchestrator:
         agent: AgentClient,
         audit: AuditLog,
         inbox: Inbox,
+        peers: PeerRegistry | None = None,
     ) -> None:
         self.cfg = cfg
         self.data = data
@@ -319,14 +334,46 @@ class Orchestrator:
         self.agent = agent
         self.audit = audit
         self.inbox = inbox
+        #: 없으면 단독 노드다. 있으면 원격 대상을 그 노드에 위임한다.
+        self.peers = peers
         self._pending: dict[str, PendingRequest] = {}
 
     # ── 목록 ─────────────────────────────────────────────────────────
 
     async def agent_cards(self) -> list[AgentCard]:
-        """U2 위임. 여기서 필드를 만들지 않는다 — `disclose` 해석이 두 곳에
-        생기면 한쪽이 새어 나간다."""
-        return await self.store.list_agents()
+        """지목 목록. 로컬 + 피어.
+
+        U2 위임이다 — 여기서 필드를 만들지 않는다. `disclose` 해석이 두 곳에
+        생기면 한쪽이 새어 나간다.
+
+        ⚠️ **로컬이 먼저 온다.** 피어가 꺼져 있어도 내 사람은 항상 보인다.
+           피어 조회가 느리면 로컬 목록이 그만큼 늦게 나오는 것을 막기 위해
+           둘을 병렬로 부른다.
+
+        ⚠️ 피어의 `AgentCard` 를 다시 검사하지 않는다. 그 카드는 **그 노드의**
+           `store.list_agents()` 가 만든 것이고, 거기서 이미 식별자를 제거하고
+           게이트키퍼를 지났다 (BR-S-06). 여기서 다시 검사하려면 그 노드의
+           어휘·금칙어·원문이 필요하고, 원문을 받아야 한다면 이 설계가 무의미해진다.
+           **검증은 보내는 쪽이 한다** — 그것이 이 아키텍처의 규칙이다.
+        """
+        if self.peers is None:
+            return await self.store.list_agents()
+
+        local, remote = await asyncio.gather(
+            self.store.list_agents(),
+            self.peers.remote_cards(),
+            return_exceptions=True,
+        )
+        if isinstance(local, BaseException):  # pragma: no cover — 로컬 실패는 상위로
+            raise local
+        cards = list(local)
+        if isinstance(remote, BaseException):
+            log.warning(
+                "피어 지목 목록 실패 — 로컬만 보여준다", extra=log_extra(reason=str(remote)[:80])
+            )
+            return cards
+        cards.extend(card for _, card in remote)
+        return cards
 
     # ── prepare (BR-O-03) ────────────────────────────────────────────
 
@@ -385,11 +432,58 @@ class Orchestrator:
         """실패는 `PrepareFailed` 로 감싼다 — 판정된 근거를 폴백에 넘기기 위해서다."""
         classified: list[Chunk] = []
         try:
+            node = self.peers.node_of(target) if self.peers else None
+            if node is not None:
+                return await self._prepare_remote(request, target, pending, node)
             return await self._prepare_inner(request, target, pending, classified)
         except PrepareFailed:
             raise
         except Exception as e:  # noqa: BLE001 — 폴백에 근거를 넘기고 다시 올린다
             raise PrepareFailed(e, classified) from e
+
+    async def _prepare_remote(
+        self, request: AskRequest, target: str, pending: PendingRequest, node: str
+    ) -> tuple[PreparedCall, tuple[Tier, str] | None]:
+        """대상이 다른 컴퓨터에 있다 — **그 노드가 준비한다.**
+
+        여기서 하는 일은 청하고 받는 것뿐이다. 판정·조립·검증은 그 노드에서
+        일어나고, 그 노드의 원문은 이쪽으로 오지 않는다.
+
+        ⚠️ `PendingCall.chunks` 가 비어 있다. 폴백 답변을 만들 근거가 없다는
+           뜻이고, 그게 맞다 — 남의 원문으로 내 쪽에서 폴백을 만들 수는 없다.
+           원격 대상이 실패하면 그 노드가 자기 폴백을 돌려주거나, 아니면
+           `_send_all` 이 근거 없는 폴백을 만든다.
+
+        ⚠️ 등급 상향 신호(`tier_note`)를 원격에서도 전달한다. "사내 질문에
+           기밀 근거가 동원됐다" 는 사실은 질문자가 알아야 한다.
+        """
+        assert self.peers is not None  # noqa: S101 — node 가 있으면 peers 도 있다
+        prepared = await self.peers.client.prepare(
+            node,
+            PeerPrepareRequest(
+                asker=request.asker,
+                question=request.question,
+                target=target,
+                asker_node=self.cfg.node_name,
+            ),
+        )
+        call = prepared.call
+        pending.calls.append(
+            PendingCall(
+                envelope_id=call.envelope_id or f"remote_{target}",
+                target_entity_id=target,
+                chunks=[],  # 남의 원문은 오지 않는다
+                session_facts=(),
+                freshness=None,
+                confidence_factor=1.0,  # 신선도 보정은 그 노드가 이미 적용했다
+                remote_node=node,
+                remote_node_name=prepared.node_name,
+            )
+        )
+        tier_note: tuple[Tier, str] | None = None
+        if call.tier is Tier.SECRET:
+            tier_note = (Tier.SECRET, f"{prepared.node_name} 의 기밀 근거가 동원됐습니다")
+        return call, tier_note
 
     async def _prepare_inner(
         self,
@@ -698,6 +792,17 @@ class Orchestrator:
         for outcome in outcomes:
             if outcome.disposition not in {Disposition.ESCALATE, Disposition.UNVERIFIED}:
                 continue
+            if outcome.call.is_remote:
+                # 원격 대상의 담당자는 그 노드에 있고, 인박스도 그쪽에 만들어졌다.
+                # 여기서 또 만들면 **같은 확인 요청이 두 컴퓨터에 뜬다.**
+                log.info(
+                    "원격 에스컬레이션 — 그 노드의 인박스에 있다",
+                    extra=log_extra(
+                        target=outcome.call.target_entity_id,
+                        node=outcome.call.remote_node_name,
+                    ),
+                )
+                continue
             if outcome.envelope is None or outcome.persona is None:  # pragma: no cover
                 continue
             escalations.append(
@@ -715,6 +820,51 @@ class Orchestrator:
         return [o.answer for o in outcomes], escalations
 
     async def _send_one(
+        self, pending: PendingRequest, call: PendingCall, approved_by: str
+    ) -> _CallOutcome:
+        if call.is_remote:
+            return await self._send_remote(pending, call, approved_by)
+        return await self._send_local(pending, call, approved_by)
+
+    async def _send_remote(
+        self, pending: PendingRequest, call: PendingCall, approved_by: str
+    ) -> _CallOutcome:
+        """대상이 다른 컴퓨터에 있다 — **그 노드가 보낸다.**
+
+        경계 밖 Agent 호출도, 감사 레코드도, 에스컬레이션도 그 노드에서 일어난다.
+        원문을 가진 쪽에 기록이 남는 것이 맞다 — "무엇이 경계를 넘었나" 는
+        원문을 가진 사람이 증명해야 하는 것이고, 그 증거가 남의 컴퓨터에 있으면
+        증명이 성립하지 않는다.
+
+        `envelope`·`persona` 를 `None` 으로 둔다. 둘은 **로컬 에스컬레이션**을
+        만들 때만 쓰이고, 원격 대상의 담당자는 그 노드의 인박스에 있다.
+        `_send_all` 이 `None` 을 보고 로컬 에스컬레이션을 건너뛴다.
+        """
+        assert self.peers is not None and call.remote_node is not None  # noqa: S101
+        answer = await self.peers.client.send(
+            call.remote_node,
+            PeerSendRequest(
+                request_id=pending.request_id,
+                envelope_id=call.envelope_id,
+                approved_by=approved_by,
+                asker_node=self.cfg.node_name,
+            ),
+        )
+        log.info(
+            "원격 노드가 답했다",
+            extra=log_extra(
+                target=call.target_entity_id,
+                node=answer.node_name,
+                escalated=answer.escalated,
+            ),
+        )
+        # ⚠️ 처분을 여기서 다시 계산하지 않는다. 원격 노드가 자기 임계값으로
+        #    이미 판단했고, 에스컬레이션도 그쪽에서 만들었다. 다시 계산하면
+        #    "그쪽은 에스컬레이션했는데 이쪽은 auto" 같은 어긋난 상태가 생긴다.
+        disposition = Disposition.ESCALATE if answer.escalated else Disposition.AUTO
+        return _CallOutcome(call, answer.answer, None, None, disposition)
+
+    async def _send_local(
         self, pending: PendingRequest, call: PendingCall, approved_by: str
     ) -> _CallOutcome:
         entry = self.gatekeeper.cache.take(call.envelope_id)  # 일회용

@@ -309,6 +309,12 @@ class AgentCardView(BaseModel):
     session_as_of: datetime | None = None
     freshness: Freshness | None = None
     daily_limit_reached: bool = False
+    #: 이 사람이 어느 컴퓨터에 있는가. `None` 이면 **이 컴퓨터**다.
+    #:
+    #: 화면이 "이 컴퓨터" / 노드 이름 배지를 그린다. 사용자가 남의 컴퓨터에
+    #: 질문을 보내고 있다는 사실을 모르면 안 된다 — 답변에는 재수화된 실제
+    #: 이름이 들어오고, 그것이 LAN 을 건너온 것이기 때문이다.
+    node_name: str | None = None
 
 
 class HealthStatus(BaseModel):
@@ -589,3 +595,104 @@ class MergedRulesView(BaseModel):
     open_path_globs: list[str]
     internal_path_globs: list[str]
     protocol_count: int
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 저장 위치 — 내 컴퓨터의 실제 경로
+# ══════════════════════════════════════════════════════════════════════
+
+
+class StorageInfo(BaseModel):
+    """`GET /api/storage` — 파일이 실제로 어디에 있는가."""
+
+    model_config = ConfigDict(frozen=True)
+
+    data_root: str
+    uploads_root: str
+    my_uploads: str | None = None
+    audit_db: str
+    sessions_root: str
+    configured_relative: bool = True
+    configured_value: str = "./data"
+    exists: bool = True
+    reveal_command: str | None = None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 피어 메시 — 같은 네트워크의 다른 컴퓨터
+# ══════════════════════════════════════════════════════════════════════
+
+
+class PeerIdentity(BaseModel):
+    """`GET /api/peer/hello`"""
+
+    model_config = ConfigDict(frozen=True)
+
+    node_name: str
+    version: str
+    peer_ready: bool
+    agent_count: int
+
+
+class PeerNodeView(BaseModel):
+    """`GET /api/peers` — 피어 목록 한 줄."""
+
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str
+    status: Literal["connected", "unreachable", "token_invalid", "self"]
+    node_name: str | None = None
+    agent_count: int = 0
+    latency_ms: int | None = None
+    detail: str | None = None
+
+
+class PeerStatus(BaseModel):
+    """`GET /api/peers` 전체."""
+
+    model_config = ConfigDict(frozen=True)
+
+    node_name: str
+    lan_mode: bool
+    listen_url: str
+    peer_token_set: bool
+    peers: tuple[PeerNodeView, ...] = ()
+    hint: str | None = None
+
+
+class PeerPrepareRequest(BaseModel):
+    """피어에게 준비 요청."""
+
+    asker: str = Field(pattern=ENTITY_ID_PATTERN)
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    target: str = Field(pattern=ENTITY_ID_PATTERN)
+    asker_node: str = Field(min_length=1, max_length=64)
+
+
+class PeerPreparedCall(BaseModel):
+    """피어 준비 결과."""
+
+    model_config = ConfigDict(frozen=True)
+
+    node_name: str
+    call: PreparedCall
+
+
+class PeerSendRequest(BaseModel):
+    """승인 후 전송 요청."""
+
+    request_id: str
+    envelope_id: str
+    approved_by: str = Field(pattern=ENTITY_ID_PATTERN)
+    asker_node: str = Field(min_length=1, max_length=64)
+
+
+class PeerAnswer(BaseModel):
+    """피어 답변."""
+
+    model_config = ConfigDict(frozen=True)
+
+    node_name: str
+    answer: RehydratedAnswer
+    escalated: bool = False
+    escalation_note: str | None = None

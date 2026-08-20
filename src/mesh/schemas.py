@@ -893,3 +893,12 @@ class AgentCard(BaseModel):
     session_as_of: datetime | None = None
     freshness: Freshness | None = None
     daily_limit_reached: bool = False
+    #: 이 사람이 어느 컴퓨터에 있는가. `None` 이면 **이 컴퓨터**다.
+    #:
+    #: 화면이 이 값으로 "이 컴퓨터" / 노드 이름 배지를 그린다. 사용자가
+    #: 남의 컴퓨터에 질문을 보내고 있다는 사실을 모르면 안 된다 — 답변에는
+    #: 재수화된 실제 이름이 들어오고, 그것이 LAN 을 건너온 것이기 때문이다.
+    #:
+    #: 값을 채우는 곳은 **그 노드의 `/api/peer/agents` 라우트**다. 질문자 쪽에서
+    #: 채우면 URL 밖에 모르고, 사람이 읽을 이름이 필요하다.
+    node_name: str | None = None
