@@ -84,7 +84,7 @@ STAGE_DEFS: tuple[tuple[str, str, str], ...] = (
     ("transform", "표현 변환", "경계를 넘을 형태로 무엇이 바뀌었나"),
     ("validate", "검증 6단계", "나가기 전 무엇을 검사했나"),
     ("dispatch", "경계 통과", "어디로 무엇이 나갔나"),
-    ("rehydrate", "재수화", "기호를 실제 이름으로 되돌린 결과"),
+    ("rehydrate", "식별화", "기호를 실제 이름으로 되돌린 결과"),
 )
 
 STAGE_ORDER: dict[str, int] = {sid: i for i, (sid, _, _) in enumerate(STAGE_DEFS)}
@@ -663,7 +663,7 @@ class TraceRecorder:
             panels=(
                 TracePanel(
                     panel_id="select-table",
-                    label="동원된 근거",
+                    label="선택된 근거",
                     kind="table",
                     caption=(
                         "세션이 좁혀 둔 후보에서만 고른다 — 전역 스캔은 하지 않는다 (BR-S-01). "
@@ -672,17 +672,17 @@ class TraceRecorder:
                     columns=("문서", "등급", "종류", "시점", "분량"),
                     rows=rows,
                 ),
-                TracePanel(
-                    panel_id="select-how",
-                    label="고른 방법",
-                    kind="note",
-                    text=(
-                        "EXAONE 이 **경로와 제목만 보고** 인덱스를 골랐다. 본문은 넘기지 않는다 — "
-                        "아직 어떤 파일이 기밀인지 모르는 시점이기 때문이다 (BR-S-02)."
-                        if selected_by_model
-                        else "후보가 하나이거나 판정이 실패해 후보 전체를 읽었다 (fail closed 방향)."
-                    ),
-                ),
+                # TracePanel(
+                #     panel_id="select-how",
+                #     label="고른 방법",
+                #     kind="note",
+                #     text=(
+                #         "EXAONE 이 **경로와 제목만 보고** 인덱스를 골랐다. 본문은 넘기지 않는다 — "
+                #         "아직 어떤 파일이 기밀인지 모르는 시점이기 때문이다 (BR-S-02)."
+                #         if selected_by_model
+                #         else "후보가 하나이거나 판정이 실패해 후보 전체를 읽었다 (fail closed 방향)."
+                #     ),
+                # ),
             ),
         )
 
@@ -717,7 +717,7 @@ class TraceRecorder:
         #    실제 값은 ⑥ 재수화에서 **답변에 등장한 것만** 연다.
         rows = tuple(
             TraceRow(
-                cells=(symbol, symbol_kind(symbol), "⑥ 재수화 — 답변에 등장하면 공개"),
+                cells=(symbol, symbol_kind(symbol), "⑥ 식별화 — 답변에 등장하면 공개"),
                 status="info",
             )
             for symbol in sorted(table, key=len, reverse=True)
@@ -729,7 +729,7 @@ class TraceRecorder:
             panels=(
                 TracePanel(
                     panel_id="transform-payload",
-                    label="경계를 넘는 것 (전문)",
+                    label="비식별화 결과 (전문)",
                     kind="json",
                     caption=(
                         _representation_caption(env.representation)
@@ -754,18 +754,18 @@ class TraceRecorder:
                         "(BR-G-09).\n\n여기서 값을 감추는 이유는 '답변에 없어서' 가 아니다 — "
                         "**이 시점에는 답변이 아직 오지 않았다.** 이 표에는 답변에 쓰이지 않을 "
                         "문서 제목과 인명까지 들어 있어서, 전부 펼치면 그 사람의 파일에 무엇이 "
-                        "있는지가 새어 나간다. 실제 값은 **⑥ 재수화에서 답변에 등장한 것만** 연다."
+                        "있는지가 새어 나간다. 실제 값은 **⑥ 식별화에서 답변에 등장한 것만** 연다."
                     ),
                     columns=("기호", "무엇을 가렸나", "값이 열리는 시점"),
                     rows=rows,
                     redacted_count=len(table),
                 ),
-                TracePanel(
-                    panel_id="transform-how",
-                    label="어떻게 만들었나",
-                    kind="note",
-                    text=extraction_note or _representation_how(env.representation),
-                ),
+                # TracePanel(
+                #     panel_id="transform-how",
+                #     label="어떻게 만들었나",
+                #     kind="note",
+                #     text=extraction_note or _representation_how(env.representation),
+                # ),
             ),
         )
 
@@ -836,12 +836,12 @@ class TraceRecorder:
         self.crossed_boundary = sent and not failed
         rows: list[TraceRow] = [
             TraceRow(
-                cells=("전송 여부", "나갔음" if sent else "나가지 않음"),
+                cells=("전송 여부", "비식별화 후 전송됨" if sent else "전송되지 않음"),
                 status="warn" if sent else "pass",
             ),
             TraceRow(cells=("경로", transport)),
             TraceRow(cells=("모델", model_id)),
-            TraceRow(cells=("엔드포인트", endpoint or "(전송 없음)")),
+            TraceRow(cells=("엔드포인트", endpoint or "(전송되지 않음)")),
             TraceRow(cells=("승인자", approved_by)),
             TraceRow(cells=("크기", f"{env.size_bytes:,} bytes")),
         ]
@@ -916,7 +916,7 @@ class TraceRecorder:
                 #    (파일 §규칙 3). mapping_rows() 자체는 그대로 두고 여기서만 연다.
                 rows.append(
                     TraceRow(
-                        cells=(symbol, f"{table.get(symbol, '')} · 비식별 처리된 값(PoC 확인용)"),
+                        cells=(symbol, f"{table.get(symbol, '')}"),
                         status="warn",
                     )
                 )
@@ -928,12 +928,12 @@ class TraceRecorder:
                 kind="compare",
                 caption=(
                     "왼쪽은 경계 **밖** 모델이 만든 그대로다 — 실제 이름을 본 적이 없다. "
-                    "오른쪽은 신뢰 구역 안에서 기호를 되돌린 것이다. "
-                    "재수화는 **순수 문자열 치환**이고 모델을 쓰지 않는다 (FR-13)."
+                    "오른쪽은 신뢰 구역 안에서 기호를 실제 이름으로 되돌린 것이다. "
+                    "식별화는 **순수 문자열 치환**이고 모델을 쓰지 않는다 (FR-13)."
                 ),
-                before_label="경계 밖에서 받은 것 (기호)",
+                before_label="경계 밖에서 받은 것 (비식별 기호)",
                 before_text=masked_text or "(기호가 남지 않은 답변)",
-                after_label="신뢰 구역에서 복원한 것",
+                after_label="신뢰 구역에서 식별화한 것",
                 after_text=rehydrated_text,
             ),
             TracePanel(

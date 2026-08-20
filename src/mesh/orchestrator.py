@@ -597,22 +597,18 @@ class Orchestrator:
         else:
             # ── 1단계: 내 Agent 가 먼저 스스로 답할 수 있는지 본다 ──────────
             #
-            # 기획서 §4.3: "스스로 해결할 수 있는 쿼리는 스스로 해결한다.
-            # 스스로 해결할 수 없는 쿼리만 broadcasting 한다."
-            #
-            # 내 세션에 읽을 근거가 있으면 먼저 나 혼자 답해 보고, 그 답이
-            # 자동 응답(AUTO — 인용 있고 신뢰도 높음) 수준이면 broadcast 를
-            # 하지 않는다. 부족할 때만 다른 사람에게 뿌린다.
+            # force_broadcast=True 면 이 단계를 건너뛰고 바로 broadcast 한다.
             self_answer: AskResult | None = None
-            try:
-                _session = self.store.load_session(request.asker)
-                if self.store.candidate_paths(_session):
-                    self_answer = await self._consult_one(request, request.asker)
-            except Exception as e:  # noqa: BLE001 — 세션 없거나 실패하면 broadcast 로 간다
-                log.info(
-                    "자기 답변 시도 실패 — broadcast 로 진행",
-                    extra=log_extra(asker=request.asker, reason=type(e).__name__),
-                )
+            if not request.force_broadcast:
+                try:
+                    _session = self.store.load_session(request.asker)
+                    if self.store.candidate_paths(_session):
+                        self_answer = await self._consult_one(request, request.asker)
+                except Exception as e:  # noqa: BLE001 — 세션 없거나 실패하면 broadcast 로 간다
+                    log.info(
+                        "자기 답변 시도 실패 — broadcast 로 진행",
+                        extra=log_extra(asker=request.asker, reason=type(e).__name__),
+                    )
 
             self_sufficient = (
                 self_answer is not None

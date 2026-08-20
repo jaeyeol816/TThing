@@ -49,14 +49,29 @@
     <div class="chat-input-area">
       <div class="input-wrapper">
         <label class="sr-only" for="message-input">메시지 입력</label>
-        <textarea id="message-input" rows="1" placeholder="메시지를 입력하세요"
+        <textarea id="message-input" rows="3" placeholder="메시지를 입력하거나 / 로 명령을 사용하세요."
                   data-testid="message-input"></textarea>
-        <button type="button" class="send-btn" id="send-btn" data-testid="send-btn" disabled
-                aria-label="전송">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13"/>
-          </svg>
-        </button>
+        <div class="input-toolbar">
+          <div class="input-toolbar-left">
+            <!-- 향후 첨부 등 추가 가능한 자리 -->
+          </div>
+          <div class="input-toolbar-right">
+            <!-- Broadcasting 토글 -->
+            <label class="broadcast-toggle" id="broadcast-toggle-wrap" title="Always broadcasting">
+              <input type="checkbox" id="broadcast-toggle" aria-label="Always broadcasting">
+              <span class="broadcast-toggle-track">
+                <span class="broadcast-toggle-thumb"></span>
+              </span>
+              <span class="broadcast-toggle-label">Broadcasting</span>
+            </label>
+            <button type="button" class="send-btn" id="send-btn" data-testid="send-btn" disabled
+                    aria-label="전송">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13"/>
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
       <p class="input-hint" id="input-hint">Enter 전송 · Shift+Enter 줄바꿈</p>
     </div>

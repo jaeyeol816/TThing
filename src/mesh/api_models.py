@@ -449,6 +449,9 @@ class ConsultRequest(BaseModel):
     #: 비우면 브로드캐스트 판정으로 고른다. 지정하면 그 사람들에게만 묻는다 —
     #: 사용자가 조직도에서 직접 고른 경우가 그렇다 (지목은 사람이 한다, FR-29).
     targets: list[str] | None = Field(default=None, max_length=8)
+    #: True 면 self-sufficient 판정과 무관하게 항상 브로드캐스트한다.
+    #: UI의 "항상 방송" 토글이 이 값을 켠다.
+    force_broadcast: bool = False
     #: 자동으로 물어볼 최대 인원. 서버 상한(`CONSULT_MAX_TARGETS`)과 min 을 취한다.
     max_targets: int = Field(default=3, ge=1, le=8)
 

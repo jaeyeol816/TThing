@@ -53,6 +53,13 @@ const state = {
 
   // 직접 선택 질의 대상 (Ctrl+클릭) — entity_id Set
   selectedTargets: new Set(),
+
+  // SSE 실시간 소통 중 강조 (주황 테두리) — entity_id Set.
+  // 상태로 들고 있어야 renderOrgTree 가 카드를 다시 그려도 강조가 유지된다.
+  communicating: new Set(),
+
+  // Broadcasting 토글 — true 면 항상 전원 방송, false 면 기존 동작(혼자 못 답하면 방송).
+  forceBroadcast: false,
 };
 
 const MAX_QUESTION = 4000;
@@ -390,7 +397,7 @@ function renderThreadBar() {
     ]));
     $("message-input").placeholder = "메시지를 입력하세요";
     $("input-hint").textContent =
-      "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원의 Agent 에게 방송됩니다";
+      "Enter 전송 · Shift+Enter 줄바꿈";
     updateSelectionHint();
     return;
   }
@@ -879,6 +886,7 @@ function memberCard(entityId) {
   if (blocked) classes.push("is-blocked");
   if (isMe) classes.push("is-me");
   if (!isMe && state.selectedTargets.has(entityId)) classes.push("is-selected");
+  if (!isMe && state.communicating.has(entityId)) classes.push("communicating");
 
   const info = el("div", { class: "org-info" }, [
     el("div", { class: "org-name-row" }, [
@@ -999,8 +1007,10 @@ function updateSelectionHint() {
       .map((id) => (state.agentsById[id] ? state.agentsById[id].display_name : id))
       .join(", ");
     hint.textContent = `선택 ${state.selectedTargets.size}명에게만 질의합니다: ${names} · ESC 또는 Ctrl+클릭으로 해제`;
+  } else if (state.forceBroadcast) {
+    hint.textContent = "Always broadcasting — 질문은 항상 전원에게 전달됩니다";
   } else {
-    hint.textContent = "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원의 Agent 에게 방송됩니다";
+    hint.textContent = "Enter 전송 · Shift+Enter 줄바꿈";
   }
 }
 
@@ -1025,10 +1035,19 @@ function handleSseEvent(data) {
     setCommunicating(data.entity_id, false);
   } else if (type === "broadcast_end") {
     (data.agents || []).forEach((id) => setCommunicating(id, false));
+    state.communicating.clear();  // 전원 종료 시 set 초기화 (남은 것이 없게)
   }
 }
 
 function setCommunicating(entityId, active) {
+  // state 를 먼저 갱신 → renderOrgTree 가 카드를 다시 그려도 클래스가 유지된다.
+  // 이전처럼 DOM 을 직접 건드리면 렌더링이 State 를 덮어써 일부만 적용된다.
+  if (active) {
+    state.communicating.add(entityId);
+  } else {
+    state.communicating.delete(entityId);
+  }
+  // 현재 DOM 에 이미 있는 카드도 즉시 반영한다 (renderOrgTree 를 안 불러도 됨).
   document.querySelectorAll("[data-entity]").forEach((card) => {
     if (card.dataset.entity === entityId) {
       card.classList.toggle("communicating", active);
@@ -1045,27 +1064,26 @@ async function doConsult(question) {
   const targets = state.selectedTargets.size > 0 ? [...state.selectedTargets] : null;
   const hintSuffix = targets
     ? `→ 선택 ${targets.length}명에게 직접 질의`
-    : "→ 내 Agent (전원 방송)";
+    : "→ 내 Agent";
   pushMessage(MY_AGENT, { kind: "user", text: question, hint: hintSuffix });
 
   const loading = addLoadingMessage("내 Agent");
-  const startedAt = Date.now();
+
+  // 대상을 지목하지 않은 경우 = 전원 방송. 응답을 기다리는 **동안** 파동을
+  // 켜 둔다 (응답이 온 뒤에 켜면 이미 늦어 0ms 만에 사라진다). 특정 인원을
+  // 지목했으면 방송이 아니므로 파동을 켜지 않는다.
+  if (!targets) startWave();
 
   try {
     const reqBody = { question, asker: state.me.entity_id };
     if (targets) reqBody.targets = targets;
+    if (state.forceBroadcast) reqBody.force_broadcast = true;
     const result = await api("/api/ask/consult", { method: "POST", body: reqBody });
 
-    // 조직도 파동은 **실제로 방송했을 때만** 보여준다. 내 Agent 가 혼자
-    // 답했거나 특정 인원만 지목한 경우엔 방송이 없으므로 파동도 없다.
-    if (result.broadcast) {
-      startWave();
-      // 응답이 즉시 와도 파동은 잠깐 보여준다 — 무엇이 일어났는지가 보여야 한다.
-      const elapsed = Date.now() - startedAt;
-      if (elapsed < WAVE_MIN_MS) await sleep(WAVE_MIN_MS - elapsed);
-      stopWave();
-      applyBroadcast(result.broadcast);
-    }
+    stopWave();
+    // 실제로 방송해 후보가 남은 경우에만 조직도에 판정 강조를 입힌다.
+    // 혼자 답했으면(broadcast 없음) 강조하지 않는다.
+    if (result.broadcast) applyBroadcast(result.broadcast);
 
     removeMessage(loading);
     pushMessage(MY_AGENT, { kind: "digest", result });
@@ -1506,8 +1524,8 @@ function tableBlock(panel) {
   return wrap;
 }
 
-/* 기호 답변 ↔ 복원된 답변. 왼쪽은 경계 밖 모델이 만든 그대로이고
- * 오른쪽은 신뢰 구역 안에서 기호를 되돌린 것이다. */
+/* 비식별 기호 답변 ↔ 식별화된 답변. 왼쪽은 경계 밖 모델이 만든 그대로이고
+ * 오른쪽은 신뢰 구역 안에서 기호를 실제 이름으로 되돌린 것이다. */
 function compareBlock(panel) {
   // 기호(<SYM_N> 패턴)를 bold로 강조한다. 양쪽 모두 적용.
   function preWithBold(text) {
@@ -1784,6 +1802,15 @@ function wire() {
   }
 
   on("send-btn", "click", onSubmit);
+
+  // Broadcasting 토글 배선
+  const broadcastToggle = $("broadcast-toggle");
+  if (broadcastToggle) {
+    broadcastToggle.addEventListener("change", () => {
+      state.forceBroadcast = broadcastToggle.checked;
+      updateSelectionHint();
+    });
+  }
   on("trace-modal-close", "click", () => {
     const m = $("trace-modal");
     if (m) m.close();
