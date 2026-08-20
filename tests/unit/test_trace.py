@@ -101,7 +101,9 @@ def test_evidence_stages_show_titles_and_sizes_not_bodies() -> None:
             as_of="2026-08-19",
             chars=4200,
             rule_tier=Tier.SECRET,
-            reasons=("EXAONE 보조 판정 비활성",),
+            rule_number=2,
+            exaone_skipped=True,
+            reasons=("금칙어 '하나텔'",),
         ),
     )
     rec = recorder()
@@ -110,8 +112,8 @@ def test_evidence_stages_show_titles_and_sizes_not_bodies() -> None:
     blob = rec.build().model_dump_json()
 
     assert "SDK 인증 설계 문서" in blob
-    assert "EXAONE 보조 판정 비활성" in blob
     assert "4,200자" in blob, "분량은 숫자로만 남는다"
+    assert "하나텔" not in blob, "매치된 금칙어는 표에도 실리지 않는다"
 
 
 # ══════════════════════════════════════════════════════════════════════

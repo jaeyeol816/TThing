@@ -354,6 +354,16 @@ class Config:
     broadcast_threshold: float
     #: 한 번의 브로드캐스트에서 후보로 남길 최대 인원.
     broadcast_max_relevant: int
+    #: 질문자의 Agent 가 **자동으로** 물어볼 최대 인원.
+    #:
+    #: `broadcast_max_relevant` 보다 작게 잡는 것이 기본이다. 후보로 보여주는
+    #: 것은 공짜지만 실제로 묻는 것은 매번 경계를 넘는 일이다 — 후보 6명에게
+    #: 전부 자동으로 물으면 한 번의 질문이 경계를 6번 넘는다.
+    consult_max_targets: int
+    #: 데모에서 "나" 로 시작할 사람. 비우면 `agents.yaml` 의 첫 항목.
+    #:
+    #: ⚠️ **인증이 아니다.** 화면이 그 사실을 표시한다 (BR-U-15).
+    demo_user: str | None
 
     # ── 피어 메시 (같은 네트워크의 다른 컴퓨터) ───────────────────────
     #: 이 노드의 이름. 화면과 피어 목록에 보인다. 기본값은 호스트명이다.
@@ -561,6 +571,8 @@ class Config:
             stale_confidence_factor=_env_float("STALE_CONFIDENCE_FACTOR", 0.8),
             broadcast_threshold=_env_float("BROADCAST_THRESHOLD", 0.5),
             broadcast_max_relevant=_env_int("BROADCAST_MAX_RELEVANT", 6),
+            consult_max_targets=_env_int("CONSULT_MAX_TARGETS", 3),
+            demo_user=_env("MESH_DEMO_USER") or None,
             node_name=_env("MESH_NODE_NAME") or _default_node_name(),
             peer_token=_env("MESH_PEER_TOKEN") or None,
             peers=_parse_peers(_env("MESH_PEERS")),

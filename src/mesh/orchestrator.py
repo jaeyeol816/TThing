@@ -71,6 +71,8 @@ from mesh.api_models import (
     AskResult,
     BroadcastRequest,
     BroadcastResult,
+    ConsultRequest,
+    ConsultResult,
     MergedAnswer,
     PeerPrepareRequest,
     PeerSendRequest,
@@ -506,6 +508,173 @@ class Orchestrator:
             elapsed_seconds=round(time.monotonic() - started, 3),
         )
 
+    # ── 상담 — 질문자의 Agent 가 대신 물어보고 모은다 ───────────────
+
+    async def consult(self, request: ConsultRequest) -> ConsultResult:
+        """브로드캐스트 → 답할 수 있는 사람들에게 **자동으로** 질의 → 정리.
+
+        ──────────────────────────────────────────────────────────────
+        새 경로를 여는 것이 아니다
+        ──────────────────────────────────────────────────────────────
+
+        각 사람에 대한 질의는 **기존 `prepare()` → `send()` 를 그대로 탄다.**
+        봉투는 `prepare` 만 발급하고 일회용이며, `ask_agent()` 의 전제조건 3개도
+        그대로 검사된다. 달라지는 것은 그 두 왕복을 **누가 잇는가** 뿐이다 —
+        전에는 사람이 화면에서 이었고 이제는 질문자의 Agent 가 잇는다.
+
+        ⚠️ 그래서 이 메서드는 **사람 확인 단계를 건너뛴다.** 화면이 미리보기
+           모달을 띄우고 사람이 누르던 자리에 자동 승인이 들어간다 (FR-09 의
+           완화). 그 대가로 답변마다 **처리 경과**(`trace_id`)가 붙어, 무엇이
+           경계를 넘었는지를 사후에 전문으로 열어 볼 수 있다.
+           승인을 사람이 하게 되돌리려면 화면이 `prepare`/`send` 를 직접 부르면
+           된다 — 그 경로는 그대로 살아 있다.
+
+        ⚠️ 인원 상한이 두 겹이다. 후보로 **보여주는** 것은 공짜지만 실제로
+           **묻는** 것은 매번 경계를 넘는 일이다.
+
+        `targets` 가 오면 브로드캐스트를 건너뛴다 — 사용자가 조직도에서 직접
+        고른 경우다. 지목은 여전히 사람이 할 수 있다 (FR-29).
+        """
+        started = time.monotonic()
+        limit = min(request.max_targets, self.cfg.consult_max_targets)
+
+        broadcast: BroadcastResult | None = None
+        if request.targets:
+            chosen = list(request.targets)[:limit]
+            skipped = list(request.targets)[limit:]
+        else:
+            broadcast = await self.broadcast(
+                BroadcastRequest(
+                    question=request.question,
+                    asker=request.asker,
+                    max_relevant=self.cfg.broadcast_max_relevant,
+                )
+            )
+            relevant = [r.entity_id for r in broadcast.results if r.relevant]
+            chosen, skipped = relevant[:limit], relevant[limit:]
+
+        if not chosen:
+            return ConsultResult(
+                request_id=new_request_id(),
+                question=request.question,
+                broadcast=broadcast,
+                digest=(
+                    "답할 수 있는 사람을 찾지 못했습니다. 조직도에서 직접 고르거나, "
+                    "질문에 다루는 주제를 한 단어 더 넣어 보십시오."
+                ),
+                digest_source="code",
+                elapsed_seconds=round(time.monotonic() - started, 3),
+            )
+
+        # 사람마다 따로 prepare/send 한다. 한 요청에 묶지 않는 이유:
+        # 한 사람이 차단돼도 나머지는 그대로 진행돼야 하고(R-02), 실패의 원인이
+        # 사람 단위로 남아야 화면이 "누가 왜 못 답했는지" 를 말할 수 있다.
+        outcomes = await asyncio.gather(
+            *[self._consult_one(request, target) for target in chosen],
+            return_exceptions=True,
+        )
+
+        answers: list[RehydratedAnswer] = []
+        escalations: list[str] = []
+        failed: list[str] = []
+        for target, outcome in zip(chosen, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                log.warning(
+                    "상담 실패 — 이 사람만 건너뛴다",
+                    extra=log_extra(target=target, reason=type(outcome).__name__),
+                )
+                failed.append(target)
+                continue
+            answers.extend(outcome.merged.answers)
+            escalations.extend(outcome.escalations)
+
+        merged = merge(
+            answers,
+            order=tuple(chosen),
+            auto=self.cfg.confidence_auto,
+            escalate=self.cfg.confidence_escalate,
+        )
+        if merged.answers:
+            digest, source = await self.gatekeeper.synthesize_in_zone(
+                request.question, merged.answers
+            )
+        else:
+            # 후보는 찾았는데 **한 명도 답을 주지 못한** 경우다. "찾지 못했습니다"
+            # 라고 말하면 거짓이 된다 — 찾긴 찾았고 물었는데 실패한 것이다.
+            # 둘을 뭉뚱그리면 사용자가 질문을 고쳐 쓰는 헛수고를 한다.
+            names = ", ".join(self._display_name(t) for t in chosen)
+            digest, source = (
+                f"{names}의 Agent 에게 물었지만 답을 받지 못했습니다.\n\n"
+                "이름을 눌러 직접 물어보면 어디서 막혔는지 처리 경과로 확인할 수 있습니다.",
+                "code",
+            )
+        auto_count = sum(1 for a in merged.answers if a.used_external_agent)
+
+        return ConsultResult(
+            request_id=new_request_id(),
+            question=request.question,
+            broadcast=broadcast,
+            digest=digest,
+            digest_source=source,
+            answers=merged.answers,
+            divergent=merged.divergent,
+            divergence_note=merged.divergence_note,
+            escalations=tuple(escalations),
+            consulted=tuple(chosen),
+            skipped=tuple(skipped),
+            elapsed_seconds=round(time.monotonic() - started, 3),
+            interrupts_avoided=auto_count,
+            minutes_saved_estimate=auto_count * MINUTES_PER_INTERRUPT,
+        )
+
+    @staticmethod
+    def _name_fallback(answer: RehydratedAnswer, label_name: str) -> RehydratedAnswer:
+        """폴백 답변에 **누구의 것인지** 이름을 붙인다.
+
+        `answer_in_zone()` 은 사람을 모르므로 모두에게 "사내망 내부 응답" 이라는
+        같은 라벨을 준다. 한 사람에게만 묻던 시절에는 문제가 없었지만, 지금은
+        여러 사람의 답이 한 화면에 모인다 — 라벨이 전부 똑같으면 누가 무엇을
+        말했는지 구분되지 않는다.
+        """
+        return answer.model_copy(update={"agent_label": f"{label_name} · 사내망 내부 응답"})
+
+    def _agent_label(self, entity_id: str) -> str:
+        agent = self.data.agents.get(entity_id)
+        return agent.to_persona().agent_label if agent else f"{entity_id} 의 Agent"
+
+    def _display_name(self, entity_id: str) -> str:
+        agent = self.data.agents.get(entity_id)
+        return agent.display_name if agent else entity_id
+
+    async def _consult_one(self, request: ConsultRequest, target: str) -> AskResult:
+        """한 사람에 대한 `prepare` → `send`. **기존 경로를 그대로 쓴다.**
+
+        `prepare` 가 차단(`blocked`)을 내면 봉투가 없으므로 `send` 를 부르지
+        않고, 동봉된 폴백 답변을 그대로 결과로 만든다 — "차단됐고 대신 이 답이
+        있다" 가 한 왕복에 오는 구조를 여기서도 그대로 쓴다.
+        """
+        prepared = await self.prepare(
+            AskRequest(question=request.question, asker=request.asker, targets=[target])
+        )
+        envelope_ids = [c.envelope_id for c in prepared.calls if c.envelope_id]
+
+        if not envelope_ids:
+            fallbacks = tuple(c.fallback for c in prepared.calls if c.fallback is not None)
+            self._pending.pop(prepared.request_id, None)  # send 가 오지 않는다
+            return AskResult(
+                request_id=prepared.request_id,
+                merged=merge(
+                    list(fallbacks),
+                    order=(target,),
+                    auto=self.cfg.confidence_auto,
+                    escalate=self.cfg.confidence_escalate,
+                ),
+            )
+
+        # ⚠️ 승인자는 질문자다. `ask_agent()` 의 전제조건 검사는 그대로 돈다 —
+        #    승인 **없이** 경계를 넘는 경로는 여전히 존재하지 않는다.
+        return await self.send(prepared.request_id, envelope_ids, request.asker)
+
     def _to_candidate(self, card: AgentCard) -> Candidate:
         """`AgentCard` -> 판정 입력. **카드에 없는 것은 넣지 않는다.**
 
@@ -583,6 +752,9 @@ class Orchestrator:
                     truncated=chunk.truncated,
                     rule_tier=decision.rule_tier if decision else None,
                     exaone_tier=decision.exaone_tier if decision else None,
+                    rule_number=decision.rule_number if decision else None,
+                    exaone_skipped=decision.exaone_skipped if decision else False,
+                    exaone_failed=decision.exaone_failed if decision else False,
                     exaone_note=(
                         "규칙이 이미 기밀 — 호출 생략"
                         if decision and decision.exaone_skipped
@@ -1002,12 +1174,13 @@ class Orchestrator:
             )
 
         tier = max([(c.tier or Tier.INTERNAL) for c in chunks], default=Tier.INTERNAL)
+        label_name = agent_cfg.to_persona().agent_label if agent_cfg else f"{target} 의 Agent"
         fallback = await self.gatekeeper.answer_in_zone(
             request.question, chunks, tier_label=tier.label_ko, reason=reason_code
         )
+        fallback = self._name_fallback(fallback, label_name)
         if rec is not None:
             fallback = fallback.model_copy(update={"trace_id": rec.trace_id})
-        label_name = agent_cfg.to_persona().agent_label if agent_cfg else f"{target} 의 Agent"
 
         if rec is not None:
             rec.agent_label = rec.agent_label or label_name
@@ -1060,11 +1233,16 @@ class Orchestrator:
             # 도착한 답이 없다. 신뢰 구역 안에서 답한다 (BR-O-08).
             log.warning("전체 타임아웃 — 신뢰 구역 내 폴백", extra=log_extra(request_id=request_id))
             answers = [
-                await self.gatekeeper.answer_in_zone(
-                    pending.question,
-                    pending.calls[0].chunks if pending.calls else [],
-                    tier_label="사내",
-                    reason="broker_unavailable",
+                self._name_fallback(
+                    await self.gatekeeper.answer_in_zone(
+                        pending.question,
+                        pending.calls[0].chunks if pending.calls else [],
+                        tier_label="사내",
+                        reason="broker_unavailable",
+                    ),
+                    self._agent_label(
+                        pending.calls[0].target_entity_id if pending.calls else pending.order[0]
+                    ),
                 )
             ]
             escalations = []
@@ -1114,12 +1292,17 @@ class Orchestrator:
                     "전송 실패 — 신뢰 구역 내 폴백",
                     extra=log_extra(target=call.target_entity_id, reason=type(outcome).__name__),
                 )
-                fallback = await self.gatekeeper.answer_in_zone(
-                    pending.question,
-                    call.chunks,
-                    tier_label="사내",
-                    reason=_local_reason(outcome),
+                fallback = self._name_fallback(
+                    await self.gatekeeper.answer_in_zone(
+                        pending.question,
+                        call.chunks,
+                        tier_label="사내",
+                        reason=_local_reason(outcome),
+                    ),
+                    self._agent_label(call.target_entity_id),
                 )
+                if call.trace is not None:
+                    fallback = fallback.model_copy(update={"trace_id": call.trace.trace_id})
                 outcomes.append(_CallOutcome(call, fallback, None, None, Disposition.BLOCKED))
                 continue
             outcomes.append(outcome)
@@ -1224,17 +1407,33 @@ class Orchestrator:
         #    등장한 기호**뿐이고 나머지는 건수만 센다 (`trace.mapping_rows`).
         mapping_snapshot = dict(entry.mapping.table)
 
-        if rec:
-            rec.mark("dispatch")
+        # ⚠️ 트레이스의 dispatch 단계는 호출 **뒤**에 기록한다. 왕복 시간을 담아야
+        #    하기 때문이다. "호출 직전에 남긴다" 는 약속(BR-A-01)은 **감사 로그**의
+        #    것이고 그것은 `ask_agent()` 안에서 그대로 지켜진다 — 호출이 실패해도
+        #    "나갔다" 는 사실은 감사 로그에 남는다. 아래 `except` 가 실패한 경우에도
+        #    단계를 남기는 이유가 그것이다.
+        def note_dispatch(started: float, *, failed: bool, usage: dict | None = None) -> None:
+            if not rec:
+                return
             rec.add_dispatch(
                 env=entry.envelope,
                 transport=self.cfg.agent_transport.value,
                 model_id=self.cfg.agent_model_id,
                 approved_by=approved_by,
                 endpoint=self._boundary_endpoint(),
+                latency_ms=int((time.monotonic() - started) * 1000),
+                usage=usage,
+                failed=failed,
             )
+
+        dispatch_started = time.monotonic()
         try:
-            resp = await self.agent.ask(entry.envelope, persona, approved_by)
+            try:
+                resp = await self.agent.ask(entry.envelope, persona, approved_by)
+            except BaseException:
+                note_dispatch(dispatch_started, failed=True)
+                raise
+            note_dispatch(dispatch_started, failed=False, usage=resp.usage)
             answer = self.gatekeeper.rehydrate(
                 resp, entry.mapping, persona=persona, chunks=call.chunks
             )

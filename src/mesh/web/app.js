@@ -26,24 +26,27 @@
 // 상태
 // ══════════════════════════════════════════════════════════════════
 
+/* 내 Agent 스레드의 키. 사람 `entity_id` 와 섞이지 않게 `@` 를 쓴다 —
+ * `entity_id` 는 `person:kim` 꼴이라 `@` 로 시작할 수 없다.
+ *
+ * ⚠️ `state` 의 초기값이 이 상수를 참조하므로 **선언이 먼저 와야 한다.**
+ *    뒤에 두면 모듈이 로드되는 순간 TDZ 오류로 화면 전체가 죽는다. */
+const MY_AGENT = "@me";
+
 const state = {
-  currentUser: null,
-  users: [],
+  me: null,              // GET /api/me — 내 Agent 의 주인
   agents: [],            // AgentCardView[]
   agentsById: {},        // entity_id -> AgentCardView
   org: null,             // GET /api/org
-  health: null,
   busy: false,
 
-  // 브로드캐스트
-  broadcast: null,       // 최근 BroadcastResult
+  // 브로드캐스트 판정 (조직도 강조에 쓴다)
+  broadcast: null,
   relevance: {},         // entity_id -> AgentRelevanceView
-  pendingQuestion: "",   // 뿌려 놓고 아직 사람을 안 고른 질문
 
   // 대화
-  activeThread: null,    // entity_id · null 이면 브로드캐스트 화면
-  threads: {},           // entity_id -> 메시지 배열
-  broadcastLog: [],      // 브로드캐스트 화면의 메시지 배열
+  activeThread: MY_AGENT,  // MY_AGENT 이거나 entity_id
+  threads: {},             // 스레드 키 -> 메시지 배열
 
   // 트레이스 캐시 (trace_id -> GatekeeperTrace)
   traces: {},
@@ -115,6 +118,146 @@ function richText(target, text) {
 
 function para(text, cls) {
   return richText(el("p", cls ? { class: cls } : {}), text);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 마크다운 — DOM 을 직접 짓는다
+// ══════════════════════════════════════════════════════════════════
+//
+// 라이브러리를 쓰지 않는 이유가 두 가지 있다.
+//
+//   1. 이 화면은 외부 스크립트를 하나도 불러오지 않는다 (CSP + SECURITY-10).
+//   2. 거의 모든 마크다운 라이브러리는 **HTML 문자열**을 만든다. 그 문자열을
+//      화면에 넣으려면 `innerHTML` 이 필요하고, 그건 금지돼 있다 (BR-U-12).
+//      여기서 만드는 것은 텍스트 노드와 정해진 태그뿐이라 주입 경로가 없다.
+//
+// 링크는 **일부러 만들지 않는다.** 답변 텍스트는 문서에서 온 것이고, 거기
+// `[클릭](javascript:…)` 이 들어 있으면 클릭 가능한 실행 경로가 생긴다.
+// 링크 문구는 글자로 남기고 URL 은 괄호에 그대로 둔다.
+
+/* `_` 를 기울임으로 보려면 **단어 경계에 있어야 한다.**
+ * 이 도메인의 텍스트에는 `max_session_hours` · `auth_mechanism_class` 처럼
+ * snake_case 식별자가 널려 있고, 경계를 안 보면 그것들이 통째로 기울어진다
+ * (실제로 답변이 "maxsessionhours" 로 뭉개졌다). */
+const MD_INLINE =
+  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\n]+\*)|((?<![A-Za-z0-9_])_[^_\n]+_(?![A-Za-z0-9_]))/g;
+
+function mdInline(target, text) {
+  const source = String(text || "");
+  let last = 0;
+  let m;
+  MD_INLINE.lastIndex = 0;
+  while ((m = MD_INLINE.exec(source)) !== null) {
+    if (m.index > last) target.appendChild(document.createTextNode(source.slice(last, m.index)));
+    const token = m[0];
+    if (m[1]) target.appendChild(el("code", { text: token.slice(1, -1) }));
+    else if (m[2]) target.appendChild(el("strong", { text: token.slice(2, -2) }));
+    else target.appendChild(el("em", { text: token.slice(1, -1) }));
+    last = m.index + token.length;
+  }
+  if (last < source.length) target.appendChild(document.createTextNode(source.slice(last)));
+  return target;
+}
+
+function mdTableRow(line) {
+  return line.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+}
+
+const MD_ALIGN_ROW = /^\s*\|?[\s:|-]+\|[\s:|-]*$/;
+
+function renderMarkdown(container, text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  let i = 0;
+  let list = null;      // 진행 중인 <ul>/<ol>
+  let paragraph = [];   // 진행 중인 문단 줄들
+
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    container.appendChild(mdInline(el("p"), paragraph.join(" ")));
+    paragraph = [];
+  };
+  const flushList = () => { list = null; };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // 코드 블록
+    if (trimmed.startsWith("```")) {
+      flushParagraph(); flushList();
+      const body = [];
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) { body.push(lines[i]); i += 1; }
+      i += 1;
+      container.appendChild(el("pre", { class: "md-code" }, [el("code", { text: body.join("\n") })]));
+      continue;
+    }
+
+    // 표
+    if (trimmed.startsWith("|") && i + 1 < lines.length && MD_ALIGN_ROW.test(lines[i + 1])) {
+      flushParagraph(); flushList();
+      const head = mdTableRow(trimmed);
+      i += 2;
+      const body = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) { body.push(mdTableRow(lines[i].trim())); i += 1; }
+      const table = el("table", { class: "md-table" }, [
+        el("thead", {}, [el("tr", {}, head.map((c) => mdInline(el("th"), c)))]),
+        el("tbody", {}, body.map((r) => el("tr", {}, r.map((c) => mdInline(el("td"), c))))),
+      ]);
+      container.appendChild(el("div", { class: "md-table-wrap" }, [table]));
+      continue;
+    }
+
+    if (trimmed === "") { flushParagraph(); flushList(); i += 1; continue; }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushParagraph(); flushList();
+      container.appendChild(el("hr", { class: "md-hr" }));
+      i += 1; continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
+    if (heading) {
+      flushParagraph(); flushList();
+      const level = Math.min(heading[1].length + 2, 6);  // #→h3 (말풍선 안이다)
+      container.appendChild(mdInline(el(`h${level}`, { class: "md-h" }), heading[2]));
+      i += 1; continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      flushParagraph(); flushList();
+      const quote = el("blockquote", { class: "md-quote" });
+      while (i < lines.length && lines[i].trim().startsWith(">")) {
+        quote.appendChild(mdInline(el("p"), lines[i].trim().replace(/^>\s?/, "")));
+        i += 1;
+      }
+      container.appendChild(quote);
+      continue;
+    }
+
+    const bullet = /^[-*+]\s+(.*)$/.exec(trimmed);
+    const numbered = /^\d+[.)]\s+(.*)$/.exec(trimmed);
+    if (bullet || numbered) {
+      flushParagraph();
+      const wanted = bullet ? "ul" : "ol";
+      if (!list || list.tagName.toLowerCase() !== wanted) {
+        list = el(wanted, { class: "md-list" });
+        container.appendChild(list);
+      }
+      list.appendChild(mdInline(el("li"), (bullet || numbered)[1]));
+      i += 1; continue;
+    }
+
+    flushList();
+    paragraph.push(trimmed);
+    i += 1;
+  }
+  flushParagraph();
+  return container;
+}
+
+function markdownBlock(text, cls = "md") {
+  return renderMarkdown(el("div", { class: cls }), text);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -210,25 +353,31 @@ async function api(path, options = {}) {
 // 어느 말풍선이 어느 스레드 것인지가 화면 상태에만 남고, 사용자를 전환하거나
 // 조직도를 새로 그리는 순간 어긋난다.
 
-const BROADCAST_VIEW = null;
+/* 스레드 키는 두 종류다.
+ *     MY_AGENT      내 Agent 와의 대화. 여기서 질문하면 대신 물어봐 준다
+ *     <entity_id>   그 사람의 Agent 와의 1:1 대화
+ */
 
-function threadOf(entityId) {
-  if (entityId === BROADCAST_VIEW) return state.broadcastLog;
-  if (!state.threads[entityId]) state.threads[entityId] = [];
-  return state.threads[entityId];
+function threadOf(key) {
+  if (!state.threads[key]) state.threads[key] = [];
+  return state.threads[key];
 }
 
-function pushMessage(entityId, message) {
-  threadOf(entityId).push({ at: new Date().toISOString(), ...message });
-  if (state.activeThread === entityId) renderThread();
+function pushMessage(key, message) {
+  threadOf(key).push({ at: new Date().toISOString(), ...message });
+  if (state.activeThread === key) renderThread();
 }
 
-function openThread(entityId) {
-  state.activeThread = entityId;
+function openThread(key) {
+  state.activeThread = key;
   renderThreadBar();
   renderThread();
   renderOrgTree();
   $("message-input").focus();
+}
+
+function myName() {
+  return state.me ? state.me.display_name : "나";
 }
 
 function renderThreadBar() {
@@ -236,15 +385,19 @@ function renderThreadBar() {
   clear(who);
   const back = $("thread-back");
 
-  if (state.activeThread === BROADCAST_VIEW) {
+  if (state.activeThread === MY_AGENT) {
     back.hidden = true;
-    who.appendChild(el("span", { class: "thread-title", text: "전체에게 묻기" }));
+    who.appendChild(el("span", { class: "thread-title" }, [
+      el("span", { text: "내 Agent" }),
+      el("span", { class: "rank-badge", text: myName() }),
+    ]));
     who.appendChild(el("span", {
       class: "thread-sub",
-      text: "질문을 보내면 모든 사람의 Agent 가 먼저 스스로 판단합니다",
+      text: "질문을 맡기면 답할 수 있는 동료의 Agent 를 찾아 대신 물어보고 정리해 드립니다",
     }));
-    $("message-input").placeholder = "질문을 입력하세요 — 답할 수 있는 사람을 찾아드립니다";
-    $("input-hint").textContent = "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원에게 방송됩니다";
+    $("message-input").placeholder = "질문을 입력하세요 — 제가 대신 물어보겠습니다";
+    $("input-hint").textContent =
+      "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원의 Agent 에게 방송됩니다";
     return;
   }
 
@@ -253,7 +406,7 @@ function renderThreadBar() {
   back.hidden = false;
 
   const title = el("span", { class: "thread-title" }, [
-    el("span", { text: agent ? agent.display_name : state.activeThread }),
+    el("span", { text: agent ? `${agent.display_name}의 Agent` : state.activeThread }),
   ]);
   if (agent && agent.rank_badge) {
     title.appendChild(el("span", { class: "rank-badge", text: agent.rank_badge }));
@@ -271,7 +424,7 @@ function renderThreadBar() {
   }
 
   $("message-input").placeholder =
-    `${agent ? agent.display_name : "이 사람"}의 Agent 에게 질문하기`;
+    `${agent ? agent.display_name : "이 사람"}의 Agent 에게 직접 질문하기`;
   $("input-hint").textContent = "Enter 전송 · Shift+Enter 줄바꿈 · 이 사람에게만 전달됩니다";
 }
 
@@ -290,11 +443,16 @@ function renderThread() {
 
 function emptyState() {
   const box = el("div", { class: "empty-state" });
-  if (state.activeThread === BROADCAST_VIEW) {
-    box.appendChild(el("p", { class: "empty-title", text: "누구에게 물어야 할지 모르겠다면" }));
+  if (state.activeThread === MY_AGENT) {
+    box.appendChild(el("p", { class: "empty-title", text: `${myName()}님의 Agent 입니다` }));
     box.appendChild(para(
-      "질문만 입력하세요. 모든 사람의 Agent 에게 방송되고, **답할 수 있는 사람만** " +
-      "조직도에 남습니다. 이 단계에서는 문서를 읽지 않고 경계를 넘는 것도 없습니다.",
+      "무엇이든 물어보세요. 질문을 **모든 동료의 Agent 에게 방송**해 답할 수 있는 " +
+      "사람을 찾고, 그 사람들의 Agent 에게 대신 물어본 뒤 하나로 정리해 드립니다.",
+      "empty-body",
+    ));
+    box.appendChild(para(
+      "찾는 단계에서는 문서를 읽지 않고 경계를 넘는 것도 없습니다. " +
+      "특정한 사람에게 직접 묻고 싶으면 오른쪽 조직도에서 이름을 누르세요.",
       "empty-body",
     ));
   } else {
@@ -314,16 +472,28 @@ function emptyState() {
 
 function renderMessage(message) {
   switch (message.kind) {
-    case "user":      return userBubble(message);
-    case "system":    return systemBubble(message);
-    case "broadcast": return broadcastBubble(message);
-    case "answer":    return answerBubble(message);
-    default:          return systemBubble(message);
+    case "user":    return userBubble(message);
+    case "system":  return systemBubble(message);
+    case "digest":  return digestBubble(message);
+    case "answer":  return answerBubble(message);
+    default:        return systemBubble(message);
   }
 }
 
+/* 말풍선 하나. `label` 이 있으면 **말풍선 위에** 누구의 Agent 인지 적는다. */
 function bubble(type, content, opts = {}) {
   const msg = el("div", { class: `message message-${type}` });
+
+  if (opts.label) {
+    const label = el("div", { class: "message-label" }, [
+      el("span", { class: "message-label-name", text: opts.label }),
+    ]);
+    if (opts.labelBadge) {
+      label.appendChild(el("span", { class: "rank-badge", text: opts.labelBadge }));
+    }
+    msg.appendChild(label);
+  }
+
   const contentDiv = el("div", { class: "message-content" });
   if (typeof content === "string") contentDiv.appendChild(el("p", { text: content }));
   else if (content) contentDiv.appendChild(content);
@@ -334,20 +504,24 @@ function bubble(type, content, opts = {}) {
 }
 
 function userBubble(message) {
-  return bubble("user", message.text, { hint: message.hint, at: message.at });
+  return bubble("user", message.text, { label: myName(), hint: message.hint, at: message.at });
 }
 
 function systemBubble(message) {
   return bubble("system", message.text, { at: message.at });
 }
 
-function addLoadingMessage() {
+function addLoadingMessage(label) {
   const container = $("chat-messages");
-  const msg = el("div", { class: "message message-assistant message-loading" }, [
-    el("div", { class: "message-content" }, [
-      el("div", { class: "loading-dots" }, [el("span"), el("span"), el("span")]),
-    ]),
-  ]);
+  const msg = el("div", { class: "message message-assistant message-loading" });
+  if (label) {
+    msg.appendChild(el("div", { class: "message-label" }, [
+      el("span", { class: "message-label-name", text: label }),
+    ]));
+  }
+  msg.appendChild(el("div", { class: "message-content" }, [
+    el("div", { class: "loading-dots" }, [el("span"), el("span"), el("span")]),
+  ]));
   container.appendChild(msg);
   container.scrollTop = container.scrollHeight;
   return msg;
@@ -358,55 +532,148 @@ function removeMessage(node) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 브로드캐스트 결과 말풍선
+// 내 Agent 가 모아 온 답 (digest)
 // ══════════════════════════════════════════════════════════════════
 
-function broadcastBubble(message) {
+function digestBubble(message) {
   const result = message.result;
-  const relevant = result.results.filter((r) => r.relevant);
   const content = el("div");
 
-  const head = el("p", { class: "bc-head" });
-  head.appendChild(el("span", {
-    text: `${result.results.length}명의 Agent 가 질문을 받았고, ${relevant.length}명이 답할 수 있다고 판단했습니다.`,
-  }));
-  content.appendChild(head);
+  // ① 누구에게 물었나 — 정리보다 먼저 온다. 출처를 모르고 요약을 읽으면 안 된다.
+  content.appendChild(consultHeader(result));
 
-  if (relevant.length === 0) {
-    content.appendChild(para(
-      "겹치는 담당 영역을 찾지 못했습니다. 조직도에서 **전체 보기**를 눌러 직접 고르거나, " +
-      "질문에 다루는 주제를 한 단어 더 넣어 보세요.",
-      "bc-note",
-    ));
-  } else {
-    const list = el("div", { class: "bc-list" });
-    for (const r of relevant) {
-      list.appendChild(el("button", {
-        class: "bc-pick",
-        attrs: { type: "button", "data-testid": `bc-pick-${r.entity_id}` },
-        on: { click: () => pickPerson(r.entity_id) },
-      }, [
-        el("span", { class: "bc-pick-name", text: r.display_name }),
-        el("span", { class: "bc-pick-reason", text: r.reason }),
-        el("span", { class: "bc-pick-go", text: "대화 →" }),
-      ]));
-    }
-    content.appendChild(list);
+  // ② 내 Agent 의 정리
+  if (result.digest) {
+    content.appendChild(markdownBlock(result.digest, "md digest-body"));
   }
 
-  const meta = el("div", { class: "bc-meta" });
-  meta.appendChild(badge(result.model_used ? "규칙 + EXAONE 선별" : "규칙만으로 선별", "accent"));
-  meta.appendChild(badge("경계를 넘은 것 없음", "ok"));
-  if (result.model_note) meta.appendChild(badge(result.model_note, "warn"));
-  content.appendChild(meta);
+  if (result.divergent && result.divergence_note) {
+    content.appendChild(para(`주의: ${result.divergence_note}`, "digest-warn"));
+  }
 
-  content.appendChild(para(
-    "이 단계에서 사용한 것은 담당 영역·주제 키워드·조직도·현재 작업 라벨뿐입니다. " +
-    "**문서는 한 글자도 읽지 않았고**, 아무에게도 알림이 가지 않았습니다.",
-    "bc-note",
+  // ③ 사람별 원답변. 정리만 주면 그 정리를 검증할 방법이 없다.
+  if (result.answers && result.answers.length > 0) {
+    const details = el("details", { class: "digest-details" });
+    details.appendChild(el("summary", {}, [
+      el("span", { class: "gk-arrow", text: "▶" }),
+      el("span", { text: `각 Agent 의 답변 원문 ${result.answers.length}건` }),
+    ]));
+    const body = el("div", { class: "digest-answers" });
+    for (const answer of result.answers) body.appendChild(answerCard(answer));
+    details.appendChild(body);
+    content.appendChild(details);
+  }
+
+  const node = bubble("assistant", content, {
+    label: "내 Agent",
+    labelBadge: myName(),
+    at: message.at,
+  });
+  node.classList.add("message-digest");
+  return node;
+}
+
+/* 브로드캐스트 결과 요약 줄 — 몇 명이 받았고 누가 답했는지. */
+function consultHeader(result) {
+  const box = el("div", { class: "consult-head" });
+  const bc = result.broadcast;
+  const consulted = result.consulted || [];
+
+  const nameOf = (id) => (state.agentsById[id] ? state.agentsById[id].display_name : id);
+
+  if (bc) {
+    const relevant = bc.results.filter((r) => r.relevant);
+    box.appendChild(para(
+      `**${bc.results.length}명**의 Agent 에게 질문을 방송했고, ` +
+      `**${relevant.length}명**이 답할 수 있다고 판단했습니다.`,
+      "consult-line",
+    ));
+  }
+
+  if (consulted.length > 0) {
+    const chips = el("div", { class: "consult-chips" });
+    for (const id of consulted) {
+      const rel = state.relevance[id];
+      chips.appendChild(el("button", {
+        class: "consult-chip",
+        attrs: { type: "button", title: rel ? rel.reason : "", "data-testid": `consult-chip-${id}` },
+        on: { click: () => openThread(id) },
+      }, [
+        el("span", { class: "consult-chip-name", text: nameOf(id) }),
+        el("span", { class: "consult-chip-go", text: "대화 →" }),
+      ]));
+    }
+    box.appendChild(chips);
+  }
+
+  if (result.skipped && result.skipped.length > 0) {
+    box.appendChild(para(
+      `후보였지만 이번에 묻지 않은 사람: ${result.skipped.map(nameOf).join(", ")} — ` +
+      "이름을 눌러 직접 물어볼 수 있습니다.",
+      "consult-note",
+    ));
+  }
+
+  const meta = el("div", { class: "consult-meta" });
+  meta.appendChild(badge(
+    result.digest_source === "model" ? "정리: 신뢰 구역 모델" : "정리: 코드가 조립",
+    "accent",
   ));
+  meta.appendChild(badge("정리는 경계를 넘지 않았음", "ok"));
+  if (bc && !bc.model_used) meta.appendChild(badge("선별은 규칙만으로", "warn"));
+  if (result.elapsed_seconds) {
+    meta.appendChild(badge(`${result.elapsed_seconds.toFixed(1)}초`, "muted"));
+  }
+  box.appendChild(meta);
+  return box;
+}
 
-  return bubble("system", content, { at: message.at });
+/* 사람 한 명의 원답변 카드. 이름 · 등급 · 신뢰도 · 인용 · 처리 경과. */
+function answerCard(answer) {
+  const card = el("div", { class: "answer-card" });
+
+  const head = el("div", { class: "answer-card-head" }, [
+    el("span", { class: "answer-card-name", text: answer.agent_label || "Agent" }),
+    tierBadge(answer.tier),
+    badge(`신뢰도 ${Number(answer.confidence).toFixed(2)}`, "muted"),
+  ]);
+  if (!answer.used_external_agent) {
+    head.appendChild(badge("사내망 밖으로 나간 것 없음", "ok"));
+  }
+  head.appendChild(el("button", {
+    class: "answer-card-open",
+    attrs: { type: "button" },
+    on: { click: () => openThread(answer.entity_id) },
+  }, [el("span", { text: "이 Agent 와 대화 →" })]));
+  card.appendChild(head);
+
+  card.appendChild(markdownBlock(answer.text, "md answer-card-body"));
+  card.appendChild(citationsRow(answer));
+  card.appendChild(buildTraceBlock({
+    tier: answer.tier,
+    traceId: answer.trace_id,
+    dispositionKey: answer.used_external_agent ? "auto" : "blocked",
+  }));
+  return card;
+}
+
+function citationsRow(answer) {
+  const box = el("div");
+  if (answer.citations && answer.citations.length > 0) {
+    const cites = el("div", { class: "answer-citations" });
+    cites.appendChild(el("span", { text: "인용: " }));
+    for (const c of answer.citations) {
+      cites.appendChild(badge(c.display_title || c.ref, "muted"));
+    }
+    box.appendChild(cites);
+  }
+  if (answer.unresolved_refs && answer.unresolved_refs.length > 0) {
+    box.appendChild(el("p", {
+      class: "answer-warn",
+      text: `되돌리지 못한 참조 기호 ${answer.unresolved_refs.length}개가 남아 있습니다 (그대로 표시).`,
+    }));
+  }
+  return box;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -510,13 +777,16 @@ function memberList(entityIds) {
 function memberCard(entityId) {
   const a = state.agentsById[entityId];
   if (!a) return null;
-  if (a.entity_id === state.currentUser) return null;  // 자기 자신은 제외
+
+  // 나도 목록에 있다 — 기본 화면이 나와 내 Agent 의 대화이기 때문이다.
+  // 다만 브로드캐스트 대상은 아니므로 판정 표시가 붙지 않는다.
+  const isMe = state.me && a.entity_id === state.me.entity_id;
 
   const rel = state.relevance[entityId];
-  const hasVerdict = state.broadcast !== null && rel !== undefined;
+  const hasVerdict = !isMe && state.broadcast !== null && rel !== undefined;
   const dimmed = hasVerdict && !rel.relevant;
-  const active = state.activeThread === entityId;
-  const blocked = a.daily_limit_reached;
+  const active = isMe ? state.activeThread === MY_AGENT : state.activeThread === entityId;
+  const blocked = !isMe && a.daily_limit_reached;
 
   const act = ACTIVITY[a.activity_status] || null;
 
@@ -525,16 +795,18 @@ function memberCard(entityId) {
   if (dimmed) classes.push("is-dimmed");
   if (active) classes.push("is-active");
   if (blocked) classes.push("is-blocked");
+  if (isMe) classes.push("is-me");
 
   const info = el("div", { class: "org-info" }, [
     el("div", { class: "org-name-row" }, [
       el("span", { class: "org-name", text: a.display_name }),
+      isMe ? el("span", { class: "rank-badge badge-me", text: "나" }) : null,
       a.rank_badge ? el("span", { class: "rank-badge", text: a.rank_badge }) : null,
     ]),
-    el("div", { class: "org-role", text: a.org_title || a.expertise || "" }),
+    el("div", { class: "org-role", text: isMe ? "내 Agent 와 대화합니다" : (a.org_title || a.expertise || "") }),
   ]);
 
-  if (act) {
+  if (act && !isMe) {
     info.appendChild(el("div", { class: "org-status" }, [
       el("span", { class: `dot ${act.dot}` }),
       el("span", { text: act.label }),
@@ -560,7 +832,7 @@ function memberCard(entityId) {
       "data-entity": entityId,
       "data-testid": `org-card-${entityId}`,
     },
-    on: { click: () => { if (!blocked) pickPerson(entityId); } },
+    on: { click: () => { if (!blocked) openThread(isMe ? MY_AGENT : entityId); } },
   }, [
     el("div", { class: "org-avatar", text: a.display_name.charAt(0) }),
     info,
@@ -602,7 +874,7 @@ function applyBroadcast(result) {
 
   const relevant = result.results.filter((r) => r.relevant).length;
   $("org-subtitle").textContent = relevant > 0
-    ? `${relevant}명이 답할 수 있다고 판단했습니다 — 눌러서 대화하세요`
+    ? `${relevant}명이 답할 수 있다고 판단했습니다`
     : "겹치는 담당 영역을 찾지 못했습니다 — 전체 보기로 직접 고를 수 있습니다";
   $("org-reset").hidden = false;
   renderOrgTree();
@@ -616,41 +888,36 @@ function resetBroadcast() {
   renderOrgTree();
 }
 
-async function doBroadcast(question) {
-  state.pendingQuestion = question;
-  pushMessage(BROADCAST_VIEW, { kind: "user", text: question, hint: "→ 전원의 Agent" });
+/* 내 Agent 에게 질문을 맡긴다.
+ *
+ * 서버가 브로드캐스트 → 사람별 prepare/send → 정리까지 한 번에 한다.
+ * 화면이 그 사이를 잇지 않는 이유: 사람마다 두 왕복이 필요한데 그걸 브라우저가
+ * 이으면 중간에 창을 닫았을 때 봉투가 붕 뜬다. 잇는 일은 서버가 한다. */
+async function doConsult(question) {
+  pushMessage(MY_AGENT, { kind: "user", text: question, hint: "→ 내 Agent" });
 
   startWave();
-  const loading = addLoadingMessage();
+  const loading = addLoadingMessage("내 Agent");
   const startedAt = Date.now();
 
   try {
-    const result = await api("/api/ask/broadcast", {
+    const result = await api("/api/ask/consult", {
       method: "POST",
-      body: { question, asker: state.currentUser },
+      body: { question, asker: state.me.entity_id },
     });
+
     // 응답이 즉시 와도 파동은 끝까지 보여준다 — 무엇이 일어났는지가 보여야 한다.
     const elapsed = Date.now() - startedAt;
     if (elapsed < WAVE_MIN_MS) await sleep(WAVE_MIN_MS - elapsed);
 
     removeMessage(loading);
     stopWave();
-    applyBroadcast(result);
-    pushMessage(BROADCAST_VIEW, { kind: "broadcast", result });
+    if (result.broadcast) applyBroadcast(result.broadcast);
+    pushMessage(MY_AGENT, { kind: "digest", result });
   } catch (err) {
     removeMessage(loading);
     stopWave();
-    pushMessage(BROADCAST_VIEW, { kind: "system", text: err.message });
-  }
-}
-
-/* 사람을 골랐다 — 그 사람의 스레드를 열고, 뿌려 둔 질문이 있으면 이어서 보낸다. */
-function pickPerson(entityId) {
-  const pending = state.pendingQuestion;
-  openThread(entityId);
-  if (pending) {
-    state.pendingQuestion = "";
-    askPerson(entityId, pending);
+    pushMessage(MY_AGENT, { kind: "system", text: err.message });
   }
 }
 
@@ -673,7 +940,7 @@ async function askPerson(entityId, question) {
   try {
     const prepared = await api("/api/ask/prepare", {
       method: "POST",
-      body: { question, asker: state.currentUser, targets: [entityId] },
+      body: { question, asker: state.me.entity_id, targets: [entityId] },
     });
 
     const blocked = prepared.calls.filter((c) => c.disposition === "blocked");
@@ -700,7 +967,7 @@ async function askPerson(entityId, question) {
       body: {
         request_id: prepared.request_id,
         envelope_ids: ready.map((c) => c.envelope_id),
-        approved_by: state.currentUser,
+        approved_by: state.me.entity_id,
       },
     });
     removeMessage(sending);
@@ -733,7 +1000,7 @@ function answerBubble(message) {
   const disp = DISPOSITION[message.dispositionKey] || DISPOSITION.auto;
   const content = el("div");
 
-  content.appendChild(el("p", { text: answer.text || "답변을 준비하고 있습니다." }));
+  content.appendChild(markdownBlock(answer.text || "답변을 준비하고 있습니다.", "md"));
 
   if (message.blockedReason) {
     content.appendChild(el("p", { class: "answer-blocked", text: message.blockedReason }));
@@ -759,7 +1026,8 @@ function answerBubble(message) {
 
   const tierLabel = TIER[message.tier] ? TIER[message.tier].label : "사내";
   const node = bubble("assistant", content, {
-    hint: `${message.agentLabel || "Agent"} · ${tierLabel} · ${disp.label}`,
+    label: message.agentLabel || "Agent",
+    hint: `${tierLabel} · ${disp.label}`,
     at: message.at,
   });
   if (message.dispositionKey === "blocked") node.classList.add("gk-blocked");
@@ -926,7 +1194,7 @@ function renderPanel(panel) {
 
   switch (panel.kind) {
     case "json":
-      box.appendChild(jsonBlock(panel.json_text));
+      box.appendChild(jsonBlock(panel.json_text, panel.highlight || []));
       break;
     case "table":
       box.appendChild(tableBlock(panel));
@@ -952,8 +1220,12 @@ function renderPanel(panel) {
 }
 
 /* JSON 을 토큰별로 색칠한다. **자르지 않는다** (BR-U-01) —
- * 전문을 보여준다고 하면서 일부만 보이면 그건 거짓말이다. */
-function jsonBlock(text) {
+ * 전문을 보여준다고 하면서 일부만 보이면 그건 거짓말이다.
+ *
+ * `highlight` 는 치환으로 들어간 **기호**들이다. 붉게 칠해서 "원래 값이 있던
+ * 자리" 가 한눈에 보이게 한다 — 무엇이 나갔는가만큼 **무엇이 안 나갔는가**가
+ * 이 화면의 요점이기 때문이다. */
+function jsonBlock(text, highlight = []) {
   const pre = el("pre", { class: "payload trace-payload", attrs: { tabindex: "0" } });
   const source = String(text || "");
   const re = /("(?:\\.|[^"\\])*"\s*:)|("(?:\\.|[^"\\])*")|(\b-?\d+(?:\.\d+)?\b)|(\btrue\b|\bfalse\b|\bnull\b)/g;
@@ -962,11 +1234,36 @@ function jsonBlock(text) {
   while ((m = re.exec(source)) !== null) {
     if (m.index > last) pre.appendChild(document.createTextNode(source.slice(last, m.index)));
     const cls = m[1] ? "tok-key" : m[2] ? "tok-str" : m[3] ? "tok-num" : "tok-bool";
-    pre.appendChild(el("span", { class: cls, text: m[0] }));
+    appendWithSymbols(pre, m[0], cls, highlight);
     last = m.index + m[0].length;
   }
   if (last < source.length) pre.appendChild(document.createTextNode(source.slice(last)));
   return pre;
+}
+
+/* 토큰 하나를 넣되, 그 안에 치환 기호가 있으면 그 부분만 떼어 붉게 칠한다.
+ * 긴 기호부터 찾는다 — `<SYS_1>` 과 `<SYS_11>` 이 함께 있을 때 짧은 쪽을 먼저
+ * 잡으면 잘못 쪼개진다 (재수화의 BR-P-04 와 같은 이유). */
+function appendWithSymbols(target, token, cls, highlight) {
+  const symbols = [...highlight].sort((a, b) => b.length - a.length);
+  let rest = token;
+  let guard = 0;
+
+  while (rest && guard < 200) {
+    guard += 1;
+    let bestAt = -1;
+    let bestSymbol = "";
+    for (const symbol of symbols) {
+      if (!symbol) continue;
+      const at = rest.indexOf(symbol);
+      if (at !== -1 && (bestAt === -1 || at < bestAt)) { bestAt = at; bestSymbol = symbol; }
+    }
+    if (bestAt === -1) break;
+    if (bestAt > 0) target.appendChild(el("span", { class: cls, text: rest.slice(0, bestAt) }));
+    target.appendChild(el("span", { class: "tok-sub", text: bestSymbol }));
+    rest = rest.slice(bestAt + bestSymbol.length);
+  }
+  if (rest) target.appendChild(el("span", { class: cls, text: rest }));
 }
 
 function tableBlock(panel) {
@@ -1008,26 +1305,12 @@ function compareBlock(panel) {
 // 헤더 상태 · 사용자 전환 · 입력
 // ══════════════════════════════════════════════════════════════════
 
-function renderHealth() {
-  const box = $("health-badges");
-  clear(box);
-  const h = state.health;
-  if (!h) {
-    box.appendChild(badge("연결 안 됨", "bad"));
-    return;
-  }
-  box.appendChild(h.exaone_mode === "mock" ? badge("MOCK 모드", "warn") : badge("LIVE", "ok"));
-  box.appendChild(badge(`Agent: ${h.agent_transport}`, "accent"));
-}
-
-function renderUsers() {
-  const sel = $("user-select");
-  clear(sel);
-  for (const u of state.users) {
-    sel.appendChild(el("option", { text: u.display_name, attrs: { value: u.entity_id } }));
-  }
-  if (state.currentUser) sel.value = state.currentUser;
-}
+/* 헤더에서 상태 배지를 뺐다.
+ *
+ * "LIVE" 나 "Agent: direct" 는 **개발자용 진단**이지 시연에서 읽을 정보가
+ * 아니다. 목업 모드 표시는 남길 이유가 있었지만(심사자를 속이지 않는다),
+ * 그 사실은 답변마다 처리 경과의 ⑤ 경계 통과에서 경로·모델·엔드포인트로
+ * 더 정확하게 드러난다 — 배지 하나보다 그쪽이 검증 가능하다. */
 
 function refreshSendButton() {
   const text = $("message-input").value.trim();
@@ -1051,11 +1334,11 @@ async function onSubmit() {
   autoResize(input);
   refreshSendButton();
 
-  if (state.activeThread === BROADCAST_VIEW) {
+  if (state.activeThread === MY_AGENT) {
     state.busy = true;
     refreshSendButton();
     try {
-      await doBroadcast(question);
+      await doConsult(question);
     } finally {
       state.busy = false;
       refreshSendButton();
@@ -1146,7 +1429,7 @@ function newProtoEditor(level, ownerHint) {
   _editingOwner = null;
 
   const defaultOwner = level === "company" ? "all"
-    : level === "personal" && state.currentUser ? state.currentUser
+    : level === "personal" && state.me ? state.me.entity_id
     : ownerHint || "";
 
   openProtoEditor({
@@ -1286,36 +1569,35 @@ function wire() {
   sendBtn.addEventListener("click", onSubmit);
 
   $("trace-modal-close").addEventListener("click", () => $("trace-modal").close());
+  $("trace-modal").addEventListener("cancel", () => $("trace-modal").close());
 
-  $("thread-back").addEventListener("click", () => openThread(BROADCAST_VIEW));
+  $("thread-back").addEventListener("click", () => openThread(MY_AGENT));
   $("org-reset").addEventListener("click", resetBroadcast);
-
-  $("user-select").addEventListener("change", (e) => {
-    state.currentUser = e.target.value;
-    // 관점이 바뀌면 이전 판정은 남의 것이다. 지운다.
-    resetBroadcast();
-    state.pendingQuestion = "";
-    openThread(BROADCAST_VIEW);
-  });
+  $("restart-btn").addEventListener("click", restartDemo);
 }
 
 // ══════════════════════════════════════════════════════════════════
 // 부팅
 // ══════════════════════════════════════════════════════════════════
 
+/* 데모를 처음 상태로. 대화·판정·트레이스 캐시를 전부 버린다.
+ *
+ * 새로고침으로도 되지만 버튼을 두는 이유: 시연 중에 주소창을 건드리는 것보다
+ * 안전하고, "무엇이 초기화되는지" 를 코드로 한 곳에 적어 둘 수 있다. */
+function restartDemo() {
+  state.threads = {};
+  state.traces = {};
+  resetBroadcast();
+  openThread(MY_AGENT);
+}
+
 async function boot() {
   wire();
 
+  // 내가 누구인지 서버에 묻는다. 짐작하면 `agents.yaml` 순서가 바뀌는 날 틀린다.
   try {
-    state.health = await api("/api/health");
-  } catch { state.health = null; }
-  renderHealth();
-
-  try {
-    state.users = await api("/api/users");
-    if (state.users.length > 0) state.currentUser = state.users[0].entity_id;
-  } catch { state.users = []; }
-  renderUsers();
+    state.me = await api("/api/me");
+  } catch { state.me = null; }
 
   try {
     state.agents = await api("/api/agents");
@@ -1327,8 +1609,15 @@ async function boot() {
     state.org = await api("/api/org");
   } catch { state.org = null; }
 
-  openThread(BROADCAST_VIEW);
+  openThread(MY_AGENT);
   refreshSendButton();
+
+  if (!state.me) {
+    pushMessage(MY_AGENT, {
+      kind: "system",
+      text: "내 Agent 를 확인하지 못했습니다. 서버가 떠 있는지 확인해 주세요.",
+    });
+  }
 }
 
 document.addEventListener("DOMContentLoaded", boot);

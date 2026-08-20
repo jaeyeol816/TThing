@@ -427,6 +427,83 @@ class BroadcastResult(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 상담 (`POST /api/ask/consult`) — 질문자의 Agent 가 대신 물어보고 정리한다
+# ══════════════════════════════════════════════════════════════════════
+#
+# 브로드캐스트는 **누가 답할 수 있는지**만 알려준다. 상담은 거기서 한 걸음 더 가
+# 그 사람들의 Agent 에게 실제로 묻고, 돌아온 답을 질문자의 Agent 가 하나로 모은다.
+#
+# ⚠️ 정리(`digest`)는 **신뢰 구역 안에서** 만들어진다. 재료가 이미 재수화된
+#    평문(실제 이름)이라, 경계 밖 모델에 보내면 재수화가 무의미해진다
+#    (`gatekeeper.synthesize_in_zone`).
+#
+# ⚠️ 개별 답변은 각자 경계를 넘었고 각자 감사 레코드를 남겼다. 상담은 그 왕복을
+#    **모아서 한 번에 보여주는 것**이지, 새로운 경로를 여는 것이 아니다.
+
+
+class ConsultRequest(BaseModel):
+    """질문 하나 → 답할 수 있는 사람들에게 자동으로 묻고 정리까지."""
+
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    asker: str = Field(pattern=ENTITY_ID_PATTERN)
+    #: 비우면 브로드캐스트 판정으로 고른다. 지정하면 그 사람들에게만 묻는다 —
+    #: 사용자가 조직도에서 직접 고른 경우가 그렇다 (지목은 사람이 한다, FR-29).
+    targets: list[str] | None = Field(default=None, max_length=8)
+    #: 자동으로 물어볼 최대 인원. 서버 상한(`CONSULT_MAX_TARGETS`)과 min 을 취한다.
+    max_targets: int = Field(default=3, ge=1, le=8)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("질문이 비어 있다")
+        return v
+
+    @field_validator("targets")
+    @classmethod
+    def _wellformed(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        import re
+
+        if len(set(v)) != len(v):
+            raise ValueError("중복 지목은 허용하지 않는다")
+        for t in v:
+            if not re.match(ENTITY_ID_PATTERN, t):
+                raise ValueError(f"entity_id 형식 위반: {t!r}")
+        return v
+
+
+class ConsultResult(BaseModel):
+    """`POST /api/ask/consult` 응답.
+
+    `answers` 를 `digest` 와 **함께** 돌려주는 것이 설계다. 정리만 주면
+    사용자는 정리를 검증할 방법이 없고, 정리가 원문을 왜곡해도 알 수 없다.
+    화면은 정리를 위에, 사람별 원답변을 아래에 그린다.
+    """
+
+    request_id: str
+    question: str
+    #: 누구에게 왜 물었는가. 아무도 답할 수 없었던 경우에도 그 사실이 여기 있다.
+    broadcast: BroadcastResult | None = None
+    #: 질문자의 Agent 가 만든 정리. **신뢰 구역 안에서 만들어졌다.**
+    digest: str = ""
+    #: 정리를 모델이 썼는가, 코드가 조립했는가. 화면이 그 차이를 밝힌다.
+    digest_source: Literal["model", "code"] = "code"
+    #: 사람별 원답변. 정리를 검증할 수 있어야 한다.
+    answers: tuple[RehydratedAnswer, ...] = ()
+    divergent: bool = False
+    divergence_note: str | None = None
+    escalations: tuple[str, ...] = ()
+    #: 실제로 물어본 사람 / 후보였지만 상한에 걸려 묻지 않은 사람.
+    consulted: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+    elapsed_seconds: float = 0.0
+    interrupts_avoided: int = 0
+    minutes_saved_estimate: int = 0
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 게이트키퍼 트레이스 (`GET /api/trace/{trace_id}`)
 # ══════════════════════════════════════════════════════════════════════
 #

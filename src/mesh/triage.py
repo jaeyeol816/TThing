@@ -331,7 +331,12 @@ def score_candidate(question: str, cand: Candidate) -> tuple[float, ReasonCode, 
             # 단위 이름만 걸렸다 — 팀 대표면 팀 문맥, 아니면 인접이다.
             code = "team_context" if cand.leads else "adjacent"
 
-    return round(score, 3), code, tuple(dict.fromkeys(matched))
+    # 대소문자만 다른 중복을 지운다 — `SDK` 와 `sdk` 가 나란히 뜨면
+    # "무엇이 겹쳤나" 가 아니라 잡음으로 읽힌다. 먼저 나온 표기를 남긴다.
+    seen: dict[str, str] = {}
+    for word in matched:
+        seen.setdefault(word.lower(), word)
+    return round(score, 3), code, tuple(seen.values())
 
 
 def render_reason(code: ReasonCode, cand: Candidate, matched: Sequence[str]) -> str:

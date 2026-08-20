@@ -305,6 +305,7 @@ class Classifier:
                 rule_tier=Tier.SECRET,
                 reasons=rule.reasons + (f"규칙 {rule.rule}번에서 확정 — EXAONE 생략",),
                 exaone_skipped=True,
+                rule_number=rule.rule,
             )
 
         if not self.use_exaone:
@@ -313,6 +314,7 @@ class Classifier:
                 rule_tier=rule.tier,
                 reasons=rule.reasons + ("EXAONE 보조 판정 비활성",),
                 exaone_skipped=True,
+                rule_number=rule.rule,
             )
 
         try:
@@ -332,6 +334,7 @@ class Classifier:
             rule_tier=rule.tier,
             exaone_tier=ex,
             reasons=rule.reasons + (f"EXAONE 판정 '{ex.value}'",),
+            rule_number=rule.rule,
         )
 
     @staticmethod
@@ -341,4 +344,5 @@ class Classifier:
             rule_tier=rule.tier,
             reasons=rule.reasons + ("EXAONE 판정 실패 — SECRET 으로 간주 (BR-G-01)",),
             exaone_failed=True,
+            rule_number=rule.rule,
         )

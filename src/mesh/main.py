@@ -55,6 +55,8 @@ from mesh.api_models import (
     AuditSearchResult,
     BroadcastRequest,
     BroadcastResult,
+    ConsultRequest,
+    ConsultResult,
     DocumentList,
     ErrorResponse,
     HealthStatus,
@@ -634,6 +636,26 @@ def _install_routes(app: FastAPI) -> None:
         """
         return await _services(request).orchestrator.broadcast(body)
 
+    @app.post("/api/ask/consult", response_model=ConsultResult)
+    async def consult(request: Request, body: ConsultRequest) -> ConsultResult:
+        """**질문자의 Agent 가 대신 물어보고 하나로 정리한다.**
+
+        브로드캐스트로 후보를 좁히고, 그 사람들의 Agent 에게 실제로 질의한 뒤,
+        돌아온 답을 신뢰 구역 안에서 정리해 돌려준다.
+
+        ⚠️ 각 사람에 대한 질의는 **기존 `prepare` → `send` 를 그대로 탄다.**
+           봉투는 일회용이고 `ask_agent()` 의 전제조건도 그대로 검사된다.
+           달라지는 것은 두 왕복을 사람이 아니라 질문자의 Agent 가 잇는다는 점뿐이다
+           (`orchestrator.consult` 의 주석에 대가를 적어 두었다).
+
+        ⚠️ 정리(`digest`)는 **경계를 넘지 않는다.** 재료가 이미 재수화된 평문이라,
+           경계 밖 모델에 보내면 재수화가 무의미해진다.
+
+        `targets` 를 주면 브로드캐스트를 건너뛴다 — 사용자가 조직도에서 직접
+        고른 경우다. 지목은 여전히 사람이 할 수 있다 (FR-29).
+        """
+        return await _services(request).orchestrator.consult(body)
+
     # ── 처리 경과 (게이트키퍼 트레이스) ──────────────────────────────
 
     @app.get("/api/trace/{trace_id}", response_model=GatekeeperTrace)
@@ -910,6 +932,31 @@ def _install_routes(app: FastAPI) -> None:
             UserView(entity_id=a.entity_id, display_name=a.display_name, expertise=a.expertise)
             for a in _services(request).data.agents.values()
         ]
+
+    @app.get("/api/me", response_model=UserView)
+    async def me(request: Request) -> UserView:
+        """지금 화면을 쓰고 있는 사람 = **내 Agent 의 주인**.
+
+        ⚠️ **인증이 아니다.** `MESH_DEMO_USER` 로 정하고, 없으면 `agents.yaml` 의
+           첫 항목이다. 화면이 그 사실을 표시한다 (BR-U-15).
+
+        이 라우트를 두는 이유: 화면이 "첫 번째 사람이 나겠지" 하고 짐작하지
+        않게 하기 위해서다. 짐작은 `agents.yaml` 의 순서가 바뀌는 날 조용히 틀린다.
+        """
+        svc = _services(request)
+        agents = svc.data.agents
+        entity_id = svc.cfg.demo_user or next(iter(agents), "")
+        agent = agents.get(entity_id)
+        if agent is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"MESH_DEMO_USER 가 agents.yaml 에 없습니다: {entity_id!r}",
+            )
+        return UserView(
+            entity_id=agent.entity_id,
+            display_name=agent.display_name,
+            expertise=agent.expertise,
+        )
 
     @app.get("/api/questions", response_model=list[PresetQuestion])
     async def questions(request: Request) -> list[PresetQuestion]:
