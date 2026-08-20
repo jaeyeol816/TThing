@@ -1019,7 +1019,7 @@ class Gatekeeper:
 
         if unresolved:
             log.warning(
-                "재수화되지 않은 참조 기호가 남았다 (기호 유지)",
+                "재수화되지 않은 참조 기호가 남았습니다.",
                 extra=log_extra(count=len(unresolved)),
             )
 

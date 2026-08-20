@@ -272,7 +272,7 @@ def create_app(cfg: Config | None = None, *, services: Services | None = None) -
         app.state.services = services or Services(cfg)
         if cfg.trust_boundary_simulated:
             log.info(
-                "신뢰 경계가 시뮬레이션이다 — 화면 헤더에 상시 표시된다",
+                "trust boundary simulated",
                 extra=log_extra(trusted_zone_llm=cfg.trusted_zone_llm_base_url),
             )
         # 첫 화면에서 사용자가 요약 생성을 기다리지 않게 한다
