@@ -275,9 +275,19 @@ def check_data(r: Report, cfg) -> None:
     )
     r.add("OK", "에이전트", f"{len(bundle.agents)}개: {', '.join(sorted(bundle.agents))}")
 
-    # 코퍼스와 세션
-    corpus = list(cfg.corpus_root.rglob("*")) if cfg.corpus_root.exists() else []
-    docs = [p for p in corpus if p.is_file()]
+    # 코퍼스와 세션 — 새 agents/ 구조 기준
+    # 각 agent의 data/ 디렉터리를 합산한다
+    all_docs: list = []
+    for agent_id in bundle.agents:
+        agent_data = cfg.agent_data_root(agent_id)
+        if agent_data.exists():
+            all_docs.extend(p for p in agent_data.rglob("*") if p.is_file())
+    # shared/data/public 도 포함
+    shared_data = cfg.shared_root / "data"
+    if shared_data.exists():
+        all_docs.extend(p for p in shared_data.rglob("*") if p.is_file())
+
+    docs = all_docs
     if len(docs) < 8:
         r.add(
             "WARN",
@@ -304,11 +314,15 @@ def check_data(r: Report, cfg) -> None:
     else:
         r.add("WARN", "labels.json 없음", "", "분류 정확도를 측정할 수 없다 (Day 2 게이트)")
 
-    sessions = list(cfg.sessions_root.glob("*.json")) if cfg.sessions_root.exists() else []
-    if sessions:
-        r.add("OK", "세션", f"{len(sessions)}개")
+    # 세션 — agents/{id}/gatekeeper/session.json
+    session_count = sum(
+        1 for agent_id in bundle.agents
+        if cfg.agent_session_path(agent_id).exists()
+    )
+    if session_count:
+        r.add("OK", "세션", f"{session_count}개")
     else:
-        r.add("WARN", "세션 없음", "", "data/sessions/*.json 이 필요하다")
+        r.add("WARN", "세션 없음", "", "agents/{id}/gatekeeper/session.json 이 필요하다")
 
     fixtures = cfg.fixtures_root
     api_fx = list((fixtures / "api").glob("*.json")) if (fixtures / "api").exists() else []
