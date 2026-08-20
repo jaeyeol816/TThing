@@ -1,8 +1,8 @@
 {
-  "name": "delegate-agent-mesh-app",
+  "name": "mia-app",
   "version": "0.1.0",
   "private": true,
-  "description": "대리 에이전트 메시 — Tauri 데스크톱 셸",
+  "description": "MIA; But AI got you — Tauri 데스크톱 셸",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",

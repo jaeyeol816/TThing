@@ -1,4 +1,4 @@
-//! 대리 에이전트 메시 — Tauri 데스크톱 셸.
+//! MIA; But AI got you — Tauri 데스크톱 셸.
 //!
 //! # 이 셸이 하는 일은 세 가지뿐이다
 //!
@@ -196,7 +196,7 @@ fn main() {
 
             let parsed = url.parse().map_err(|_| format!("잘못된 URL: {url}"))?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
-                .title("대리 에이전트 메시")
+                .title("MIA; But AI got you")
                 .inner_size(1180.0, 860.0)
                 .min_inner_size(760.0, 560.0)
                 .resizable(true)

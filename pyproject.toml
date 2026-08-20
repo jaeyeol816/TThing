@@ -1,7 +1,7 @@
 [project]
-name = "delegate-agent-mesh"
+name = "mia"
 version = "0.1.0"
-description = "대리 에이전트 메시 — 지식을 가진 사람 앞에 대리 에이전트를 세우고, 기밀은 구조만 경계 밖으로 보낸다"
+description = "MIA; But AI got you — 담당자가 자리에 없어도, 기밀은 구조만 경계 밖으로 보내고 답은 나온다"
 requires-python = ">=3.12,<3.13"
 
 # 의존성 6개 유지가 설계 목표다 (NFR-M-01).

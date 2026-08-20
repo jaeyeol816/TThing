@@ -540,14 +540,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "delegate-agent-mesh"
-version = "0.1.0"
-dependencies = [
- "tauri",
- "tauri-build",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1785,6 +1777,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mia"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-build",
 ]
 
 [[package]]

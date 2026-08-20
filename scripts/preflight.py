@@ -502,7 +502,7 @@ def main() -> int:
     ap.add_argument("--no-network", action="store_true", help="LLM·AWS 호출 생략")
     args = ap.parse_args()
 
-    print("대리 에이전트 메시 — 환경 검증")
+    print("MIA; But AI got you — 환경 검증")
 
     r = Report()
     check_runtime(r)

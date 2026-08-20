@@ -219,7 +219,7 @@ def create_app(cfg: Config | None = None, *, services: Services | None = None) -
 
     dev = cfg.dev_mode
     app = FastAPI(
-        title="대리 에이전트 메시",
+        title="MIA; But AI got you",
         lifespan=lifespan,
         # ⚠️ 기본 비활성 (SECURITY-09). OpenAPI 스키마는 내부 구조를 전부 노출한다.
         docs_url="/docs" if dev else None,

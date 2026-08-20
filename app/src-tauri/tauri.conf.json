@@ -1,7 +1,7 @@
 {
-  "productName": "대리 에이전트 메시",
+  "productName": "MIA",
   "version": "0.1.0",
-  "identifier": "dev.hackathon.delegate-agent-mesh",
+  "identifier": "dev.hackathon.mia",
   "build": {
     "frontendDist": "../dist"
   },
