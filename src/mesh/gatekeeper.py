@@ -61,7 +61,7 @@ from mesh.extractor import (
 )
 from mesh.llm.exaone import ExaoneClient as ExaoneClientImpl
 from mesh.pseudonymizer import apply as pseudonymize
-from mesh.pseudonymizer import merge_mappings
+from mesh.pseudonymizer import apply_conservative, merge_mappings
 from mesh.rehydrator import answer_to_text, rehydrate_response
 from mesh.schemas import (
     AgentCall,
@@ -696,7 +696,11 @@ class Gatekeeper:
 
             case Tier.INTERNAL:
                 assignments = assign_refs(used, schema)
-                pseudo = pseudonymize([c.text for c in used], self.data.pseudonyms)
+                # 보수적 가명화: 리터럴 + 정규식(A+B) + EXAONE span(C).
+                # EXAONE 이 없으면 정규식까지만 적용된다 (best-effort).
+                pseudo = await apply_conservative(
+                    [c.text for c in used], self.data.pseudonyms, self.exaone
+                )
                 payload = build_text_payload(schema, assignments, pseudo.texts)
                 mapping = merge_mappings(refs_mapping(assignments), pseudo.mapping)
                 representation = Representation.PSEUDONYMIZED

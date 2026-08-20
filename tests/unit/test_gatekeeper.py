@@ -354,9 +354,14 @@ async def test_internal_tier_pseudonymizes_and_passes(cfg, bundle, internal_chun
 
 
 @pytest.mark.asyncio
-async def test_internal_tier_needs_no_exaone_call(cfg, bundle, internal_chunks):
-    """가명화는 순수 문자열 치환이다. 모델을 부르지 않는다."""
-    ex = FakeExaone()
+async def test_internal_tier_asks_exaone_for_conservative_masking(cfg, bundle, internal_chunks):
+    """보수적 가명화(C)는 EXAONE 에게 추가 마스킹 span 을 제안받는다.
+
+    리터럴·정규식(A+B)은 순수 치환이지만, span 패스(C)가 붙으면서 INTERNAL 도
+    EXAONE 을 한 번 부른다. best-effort 라 EXAONE 이 빈 응답이어도 A+B 결과는
+    그대로 나가고 표현은 PSEUDONYMIZED 를 유지한다.
+    """
+    ex = FakeExaone()  # complete_json → {} (span 제안 없음)
     gk = make_gk(cfg, bundle, exaone=ex)
     call = AgentCall(
         call_id="c",
@@ -364,8 +369,9 @@ async def test_internal_tier_needs_no_exaone_call(cfg, bundle, internal_chunks):
         tier=Tier.INTERNAL,
         task_schema_id="technique_lookup",
     )
-    await gk.to_payload(call, internal_chunks, "어떤 기법?")
-    assert ex.json_calls == 0
+    env, _mapping = await gk.to_payload(call, internal_chunks, "어떤 기법?")
+    assert ex.json_calls == 1
+    assert env.representation is Representation.PSEUDONYMIZED
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -62,6 +62,42 @@ def test_numeric_parameters_survive(pseudonyms):
     assert "42" in r.texts[0]
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 보수적 마스킹 — 정규식 휴리스틱 (A + B)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_regex_masks_dates_versions_and_units(pseudonyms):
+    """목록에 없어도 날짜·버전·분기·단위수치는 모양으로 가린다."""
+    text = "2026-08-19 기준 v3.2 릴리스를 3분기에 안정화하고 토큰 수명은 14일이다."
+    r = apply([text], pseudonyms)
+    out = r.texts[0]
+    for token in ("2026-08-19", "v3.2", "3분기", "14일"):
+        assert token not in out, token
+    # 가역적이어야 한다 — 답변으로 돌아오면 신뢰 구역에서 되돌린다.
+    restored, unresolved = rehydrate_text(out, r.mapping)
+    assert restored == text
+    assert unresolved == ()
+
+
+def test_regex_keeps_bare_parameters_and_terms(pseudonyms):
+    """단위 없는 수치와 기술 용어는 그대로 둔다 (답변이 무너지지 않게)."""
+    text = "RandomOverSampler(sampling_strategy=0.5, random_state=42) 로 처리한다"
+    r = apply([text], pseudonyms)
+    out = r.texts[0]
+    assert "0.5" in out
+    assert "42" in out
+    assert "RandomOverSampler" in out
+
+
+def test_regex_numbering_is_order_independent(pseudonyms):
+    a = "v1.2 는 2025-01-01 에 나왔다"
+    b = "v3.4 는 2026-12-31 에 나온다"
+    forward = apply([a, b], pseudonyms)
+    backward = apply([b, a], pseudonyms)
+    assert forward.mapping.table == backward.mapping.table
+
+
 def test_person_name_is_replaced(pseudonyms):
     r = apply([PARK_TEXT], pseudonyms)
     assert "박선영" not in r.texts[0]
