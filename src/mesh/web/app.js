@@ -50,6 +50,9 @@ const state = {
 
   // 트레이스 캐시 (trace_id -> GatekeeperTrace)
   traces: {},
+
+  // 직접 선택 질의 대상 (Ctrl+클릭) — entity_id Set
+  selectedTargets: new Set(),
 };
 
 const MAX_QUESTION = 4000;
@@ -398,6 +401,7 @@ function renderThreadBar() {
     $("message-input").placeholder = "질문을 입력하세요 — 제가 대신 물어보겠습니다";
     $("input-hint").textContent =
       "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원의 Agent 에게 방송됩니다";
+    updateSelectionHint();
     return;
   }
 
@@ -551,7 +555,10 @@ function digestBubble(message) {
     content.appendChild(para(`주의: ${result.divergence_note}`, "digest-warn"));
   }
 
-  // ③ 사람별 원답변. 정리만 주면 그 정리를 검증할 방법이 없다.
+  // ③ 오케스트레이션 전체 과정 — 브로드캐스트 선별 + 질의 결과를 트리로.
+  content.appendChild(orchDetailBlock(result));
+
+  // ④ 사람별 원답변. 정리만 주면 그 정리를 검증할 방법이 없다.
   if (result.answers && result.answers.length > 0) {
     const details = el("details", { class: "digest-details" });
     details.appendChild(el("summary", {}, [
@@ -571,6 +578,113 @@ function digestBubble(message) {
   });
   node.classList.add("message-digest");
   return node;
+}
+
+/* 오케스트레이션 전체 과정 트리 (U2) — 브로드캐스트 선별 + 질의 결과. */
+function orchDetailBlock(result) {
+  const details = el("details", { class: "digest-details" });
+  details.appendChild(el("summary", {}, [
+    el("span", { class: "gk-arrow", text: "▶" }),
+    el("span", { text: "오케스트레이션 전체 과정 보기" }),
+  ]));
+
+  const tree = el("div", { class: "orch-tree" });
+
+  // 답변을 entity_id 로 바로 찾을 수 있게 인덱스를 만든다.
+  const answersById = {};
+  (result.answers || []).forEach((a) => { answersById[a.entity_id] = a; });
+
+  // ─ 브로드캐스트 선별 단계 ────────────────────────────────────────
+  if (result.broadcast) {
+    const bc = result.broadcast;
+    const relevant = bc.results.filter((r) => r.relevant);
+    const phase = el("div", { class: "orch-phase" });
+
+    phase.appendChild(el("div", { class: "orch-section-head" }, [
+      el("span", { text: "① 브로드캐스트 선별" }),
+      el("span", { class: "orch-meta",
+        text: `${bc.results.length}명 검토 · ${relevant.length}명 선별` }),
+      bc.model_used ? badge("모델 사용", "warn") : badge("규칙만 사용", "muted"),
+    ]));
+
+    for (const r of bc.results) {
+      const row = el("div", { class: `orch-row${r.relevant ? "" : " is-dimmed"}` });
+      row.appendChild(el("span", {
+        class: `orch-dot ${r.relevant ? "orch-dot-ok" : "orch-dot-dim"}`,
+      }));
+      row.appendChild(el("span", { class: "orch-row-name", text: r.display_name }));
+      row.appendChild(badge(r.relevant ? "선별" : "제외", r.relevant ? "ok" : "bad"));
+      if (r.reason) {
+        row.appendChild(el("span", { class: "orch-reason", text: r.reason }));
+      }
+      if (r.relevant && r.score) {
+        row.appendChild(badge(`점수 ${r.score.toFixed(2)}`, "muted"));
+      }
+      phase.appendChild(row);
+    }
+    tree.appendChild(phase);
+  }
+
+  // ─ Agent 질의 단계 ────────────────────────────────────────────────
+  const consulted = result.consulted || [];
+  const skipped = result.skipped || [];
+
+  if (consulted.length > 0 || skipped.length > 0) {
+    const phase = el("div", { class: "orch-phase" });
+    phase.appendChild(el("div", { class: "orch-section-head" }, [
+      el("span", { text: "② Agent 질의" }),
+      el("span", { class: "orch-meta",
+        text: `${consulted.length}명 답변` + (skipped.length ? ` · ${skipped.length}명 생략` : "") }),
+    ]));
+
+    for (const id of consulted) {
+      const a = answersById[id];
+      const agent = state.agentsById[id];
+      const row = el("div", { class: "orch-row" });
+
+      row.appendChild(el("span", { class: "orch-dot orch-dot-ok" }));
+      row.appendChild(el("span", {
+        class: "orch-row-name",
+        text: agent ? agent.display_name : id,
+      }));
+
+      if (a) {
+        row.appendChild(tierBadge(a.tier));
+        row.appendChild(badge(`신뢰도 ${Number(a.confidence).toFixed(2)}`, "muted"));
+        if (!a.used_external_agent) row.appendChild(badge("경계 안", "ok"));
+        if (a.trace_id) {
+          row.appendChild(el("button", {
+            class: "gk-strip-btn orch-trace-btn",
+            attrs: { type: "button" },
+            on: { click: () => openTraceModal(a.trace_id) },
+          }, [el("span", { text: "경과 ▸" })]));
+        }
+      }
+      phase.appendChild(row);
+    }
+
+    for (const id of skipped) {
+      const agent = state.agentsById[id];
+      const row = el("div", { class: "orch-row is-dimmed" });
+      row.appendChild(el("span", { class: "orch-dot orch-dot-dim" }));
+      row.appendChild(el("span", {
+        class: "orch-row-name",
+        text: agent ? agent.display_name : id,
+      }));
+      row.appendChild(badge("상한 초과 — 생략", "bad"));
+      phase.appendChild(row);
+    }
+
+    tree.appendChild(phase);
+  }
+
+  // 아무것도 없으면 안내 텍스트
+  if (!result.broadcast && consulted.length === 0) {
+    tree.appendChild(el("p", { class: "orch-empty", text: "과정 정보가 없습니다." }));
+  }
+
+  details.appendChild(tree);
+  return details;
 }
 
 /* 브로드캐스트 결과 요약 줄 — 몇 명이 받았고 누가 답했는지. */
@@ -796,6 +910,7 @@ function memberCard(entityId) {
   if (active) classes.push("is-active");
   if (blocked) classes.push("is-blocked");
   if (isMe) classes.push("is-me");
+  if (!isMe && state.selectedTargets.has(entityId)) classes.push("is-selected");
 
   const info = el("div", { class: "org-info" }, [
     el("div", { class: "org-name-row" }, [
@@ -832,7 +947,15 @@ function memberCard(entityId) {
       "data-entity": entityId,
       "data-testid": `org-card-${entityId}`,
     },
-    on: { click: () => { if (!blocked) openThread(isMe ? MY_AGENT : entityId); } },
+    on: { click: (e) => {
+      if (blocked) return;
+      if (isMe) { openThread(MY_AGENT); return; }
+      if (e.ctrlKey || e.metaKey || state.selectedTargets.size > 0) {
+        toggleSelect(entityId);
+      } else {
+        openThread(entityId);
+      }
+    } },
   }, [
     el("div", { class: "org-avatar", text: a.display_name.charAt(0) }),
     info,
@@ -888,23 +1011,93 @@ function resetBroadcast() {
   renderOrgTree();
 }
 
+// ══════════════════════════════════════════════════════════════════
+// 직접 선택 질의 (U3) — Ctrl+클릭으로 조직도에서 대상을 고른다
+// ══════════════════════════════════════════════════════════════════
+
+function toggleSelect(entityId) {
+  if (state.selectedTargets.has(entityId)) {
+    state.selectedTargets.delete(entityId);
+  } else {
+    state.selectedTargets.add(entityId);
+  }
+  renderOrgTree();
+  updateSelectionHint();
+}
+
+function clearSelection() {
+  if (state.selectedTargets.size === 0) return;
+  state.selectedTargets.clear();
+  renderOrgTree();
+  updateSelectionHint();
+}
+
+function updateSelectionHint() {
+  if (state.activeThread !== MY_AGENT) return;
+  const hint = $("input-hint");
+  if (!hint) return;
+  if (state.selectedTargets.size > 0) {
+    const names = [...state.selectedTargets]
+      .map((id) => (state.agentsById[id] ? state.agentsById[id].display_name : id))
+      .join(", ");
+    hint.textContent = `선택 ${state.selectedTargets.size}명에게만 질의합니다: ${names} · ESC 또는 Ctrl+클릭으로 해제`;
+  } else {
+    hint.textContent = "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원의 Agent 에게 방송됩니다";
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SSE — 실시간 소통 표시 (U1)
+// ══════════════════════════════════════════════════════════════════
+
+function connectSSE() {
+  const es = new EventSource("/api/hub/events");
+  es.onmessage = (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    handleSseEvent(data);
+  };
+}
+
+function handleSseEvent(data) {
+  const type = data.type;
+  if (type === "broadcast_start") {
+    (data.agents || []).forEach((id) => setCommunicating(id, true));
+  } else if (type === "agent_responded") {
+    setCommunicating(data.entity_id, false);
+  } else if (type === "broadcast_end") {
+    (data.agents || []).forEach((id) => setCommunicating(id, false));
+  }
+}
+
+function setCommunicating(entityId, active) {
+  document.querySelectorAll("[data-entity]").forEach((card) => {
+    if (card.dataset.entity === entityId) {
+      card.classList.toggle("communicating", active);
+    }
+  });
+}
+
 /* 내 Agent 에게 질문을 맡긴다.
  *
  * 서버가 브로드캐스트 → 사람별 prepare/send → 정리까지 한 번에 한다.
  * 화면이 그 사이를 잇지 않는 이유: 사람마다 두 왕복이 필요한데 그걸 브라우저가
  * 이으면 중간에 창을 닫았을 때 봉투가 붕 뜬다. 잇는 일은 서버가 한다. */
 async function doConsult(question) {
-  pushMessage(MY_AGENT, { kind: "user", text: question, hint: "→ 내 Agent" });
+  const targets = state.selectedTargets.size > 0 ? [...state.selectedTargets] : null;
+  const hintSuffix = targets
+    ? `→ 선택 ${targets.length}명에게 직접 질의`
+    : "→ 내 Agent (전원 방송)";
+  pushMessage(MY_AGENT, { kind: "user", text: question, hint: hintSuffix });
 
   startWave();
   const loading = addLoadingMessage("내 Agent");
   const startedAt = Date.now();
 
   try {
-    const result = await api("/api/ask/consult", {
-      method: "POST",
-      body: { question, asker: state.me.entity_id },
-    });
+    const reqBody = { question, asker: state.me.entity_id };
+    if (targets) reqBody.targets = targets;
+    const result = await api("/api/ask/consult", { method: "POST", body: reqBody });
 
     // 응답이 즉시 와도 파동은 끝까지 보여준다 — 무엇이 일어났는지가 보여야 한다.
     const elapsed = Date.now() - startedAt;
@@ -914,6 +1107,7 @@ async function doConsult(question) {
     stopWave();
     if (result.broadcast) applyBroadcast(result.broadcast);
     pushMessage(MY_AGENT, { kind: "digest", result });
+    clearSelection();
   } catch (err) {
     removeMessage(loading);
     stopWave();
@@ -1050,7 +1244,9 @@ function buildTraceBlock(message) {
   const strip = el("div", { class: "gk-strip" });
 
   const status = message.dispositionKey === "blocked"
-    ? { text: "경계를 넘지 않았습니다", kind: "bad" }
+    ? message.tier === "secret"
+      ? { text: "기밀 — 구조 추출 후 신뢰 구역 내 답변", kind: "warn" }
+      : { text: "경계를 넘지 않았습니다", kind: "bad" }
     : message.tier === "secret"
       ? { text: "구조만 추출해 내보냈습니다", kind: "warn" }
       : { text: "검증을 통과해 내보냈습니다", kind: "ok" };
@@ -1183,7 +1379,70 @@ function renderStage(stage) {
     box.appendChild(el("div", { class: "trace-stage-summary", text: stage.summary }));
   }
 
-  for (const panel of stage.panels || []) box.appendChild(renderPanel(panel));
+  // classify 단계 특수 처리: summary 패널 각 행에 해당 문서의 steps 토글을 포함한다.
+  const panels = stage.panels || [];
+  if (stage.stage_id === "classify") {
+    const summaryPanel = panels.find((p) => p.panel_id === "classify-summary");
+    const stepPanels = panels.filter((p) => p.panel_id && p.panel_id.startsWith("classify-steps-"));
+    const questionSteps = panels.find((p) => p.panel_id === "classify-question-steps");
+    const rest = panels.filter((p) =>
+      p !== summaryPanel && !stepPanels.includes(p) && p !== questionSteps);
+
+    if (summaryPanel) {
+      box.appendChild(renderClassifySummaryPanel(summaryPanel, questionSteps, stepPanels));
+    }
+    for (const panel of rest) box.appendChild(renderPanel(panel));
+    return box;
+  }
+
+  for (const panel of panels) box.appendChild(renderPanel(panel));
+  return box;
+}
+
+/* 1단계 등급 판정 "한눈에" — 각 행에 해당 문서의 판정 과정 표를 토글로 포함한다. */
+function renderClassifySummaryPanel(summaryPanel, questionStepsPanel, stepPanels) {
+  const box = el("div", { class: `trace-panel kind-${summaryPanel.kind}` });
+  box.appendChild(el("div", { class: "trace-panel-label", text: summaryPanel.label }));
+  if (summaryPanel.caption) box.appendChild(para(summaryPanel.caption, "trace-panel-caption"));
+
+  const wrap = el("div", { class: "trace-table-wrap" });
+  const table = el("table", { class: "trace-table classify-summary-table" });
+  if (summaryPanel.columns && summaryPanel.columns.length) {
+    table.appendChild(el("thead", {}, [
+      el("tr", {}, summaryPanel.columns.map((c) => el("th", { text: c }))),
+    ]));
+  }
+
+  const tbody = el("tbody");
+  const rows = summaryPanel.rows || [];
+
+  // 첫 행은 "질문 문장" — 질문 판정 과정과 짝짓는다.
+  rows.forEach((row, i) => {
+    const tr = el("tr", { class: `row-${row.status}` },
+      (row.cells || []).map((cell) => el("td", { text: cell })));
+    tbody.appendChild(tr);
+
+    // 질문 문장 행 (i===0) → questionStepsPanel, 나머지 → stepPanels[i-1]
+    const stepsPanel = i === 0 ? questionStepsPanel : stepPanels[i - 1];
+    if (stepsPanel) {
+      const subDet = el("details", { class: "classify-steps-toggle" });
+      const subSum = el("summary", {}, [
+        el("span", { class: "gk-arrow", text: "▶" }),
+        el("span", { text: "판정 과정 보기" }),
+      ]);
+      subDet.appendChild(subSum);
+      subDet.appendChild(renderPanel(stepsPanel));
+      const subTr = el("tr", { class: "classify-steps-row" });
+      const subTd = el("td", { attrs: { colspan: String((summaryPanel.columns || []).length) } });
+      subTd.appendChild(subDet);
+      subTr.appendChild(subTd);
+      tbody.appendChild(subTr);
+    }
+  });
+
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  box.appendChild(wrap);
   return box;
 }
 
@@ -1288,15 +1547,30 @@ function tableBlock(panel) {
 /* 기호 답변 ↔ 복원된 답변. 왼쪽은 경계 밖 모델이 만든 그대로이고
  * 오른쪽은 신뢰 구역 안에서 기호를 되돌린 것이다. */
 function compareBlock(panel) {
+  // 기호(<SYM_N> 패턴)를 bold로 강조한다. 양쪽 모두 적용.
+  function preWithBold(text) {
+    const pre = el("pre", { class: "trace-compare-text" });
+    const re = /<[A-Z][A-Z0-9_]*_\d+>/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) pre.appendChild(document.createTextNode(text.slice(last, m.index)));
+      pre.appendChild(el("strong", { class: "compare-symbol", text: m[0] }));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) pre.appendChild(document.createTextNode(text.slice(last)));
+    return pre;
+  }
+
   return el("div", { class: "trace-compare" }, [
     el("div", { class: "trace-compare-side before" }, [
       el("div", { class: "trace-compare-label", text: panel.before_label || "변환 전" }),
-      el("pre", { class: "trace-compare-text", text: panel.before_text || "" }),
+      preWithBold(panel.before_text || ""),
     ]),
     el("div", { class: "trace-compare-arrow", text: "→" }),
     el("div", { class: "trace-compare-side after" }, [
       el("div", { class: "trace-compare-label", text: panel.after_label || "변환 후" }),
-      el("pre", { class: "trace-compare-text", text: panel.after_text || "" }),
+      preWithBold(panel.after_text || ""),
     ]),
   ]);
 }
@@ -1612,6 +1886,10 @@ function wire() {
     if (m) m.close();
   });
   on("restart-btn", "click", restartDemo);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") clearSelection();
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1631,6 +1909,7 @@ function restartDemo() {
 
 async function boot() {
   wire();
+  connectSSE();
 
   // 내가 누구인지 서버에 묻는다. 짐작하면 `agents.yaml` 순서가 바뀌는 날 틀린다.
   try {

@@ -123,6 +123,8 @@ class TraceEvidence(BaseModel):
 
     #: 화면에 보이는 제목. 경로가 아니다.
     title: str
+    #: 절대 경로. UI 에서 경로+제목으로 표시할 때 쓴다 (TR-43 override — 트레이스 전용).
+    source_path: str = ""
     tier: Tier | None = None
     #: "note" / "doc" / "code" / "config" / "log" 등. 사람이 읽을 종류 표시.
     source_kind: str = ""
@@ -539,10 +541,11 @@ class TraceRecorder:
             )
         ]
         for item in evidence:
+            label = f"{item.source_path} / {item.title}" if item.source_path else item.title
             rows.append(
                 TraceRow(
                     cells=(
-                        item.title,
+                        label,
                         item.rule_tier.label_ko if item.rule_tier else "—",
                         item.exaone_tier.label_ko if item.exaone_tier else (item.exaone_note or "—"),
                         item.effective_tier.label_ko,

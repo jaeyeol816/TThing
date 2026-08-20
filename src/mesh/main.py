@@ -41,7 +41,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import ValidationError
 
 from mesh import __version__
@@ -128,6 +128,29 @@ SECURITY_HEADERS: dict[str, str] = {
 MAX_CONCURRENT_REQUESTS = 5
 
 _LOCALHOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# ── SSE 실시간 이벤트 ────────────────────────────────────────────────
+#: consult 흐름 중 조직도 카드를 강조하기 위한 브라우저 이벤트 큐 목록.
+#: 큐가 꽉 차면 가장 느린 클라이언트를 조용히 버린다 — 이벤트 유실이
+#: 답변 흐름을 막으면 안 된다.
+_sse_clients: list[asyncio.Queue[str]] = []
+
+
+def _sse_push(payload: str) -> None:
+    dead: list[asyncio.Queue[str]] = []
+    for q in _sse_clients:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        with contextlib.suppress(ValueError):
+            _sse_clients.remove(q)
+
+
+async def _sse_emit(event_type: str, **data: object) -> None:
+    import json as _json
+    _sse_push(_json.dumps({"type": event_type, **data}))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -424,6 +447,9 @@ def _install_middleware(app: FastAPI) -> None:
     async def _concurrency(request: Request, call_next: Handler) -> Response:
         if not request.url.path.startswith("/api/"):
             return await call_next(request)
+        # SSE 엔드포인트는 장시간 연결을 유지하므로 세마포어 밖에서 처리한다.
+        if request.url.path == "/api/hub/events":
+            return await call_next(request)
         async with semaphore:
             return await call_next(request)
 
@@ -691,7 +717,10 @@ def _install_routes(app: FastAPI) -> None:
         `targets` 를 주면 브로드캐스트를 건너뛴다 — 사용자가 조직도에서 직접
         고른 경우다. 지목은 여전히 사람이 할 수 있다 (FR-29).
         """
-        return await _services(request).orchestrator.consult(body)
+        async def _on_event(event_type: str, **data: object) -> None:
+            await _sse_emit(event_type, **data)
+
+        return await _services(request).orchestrator.consult(body, on_event=_on_event)
 
     # ── 처리 경과 (게이트키퍼 트레이스) ──────────────────────────────
 
@@ -1059,6 +1088,39 @@ def _install_routes(app: FastAPI) -> None:
         )
 
     # ── 허브 Ask — 단일 진입점 ───────────────────────────────────────
+
+    # ── SSE 실시간 이벤트 ───────────────────────────────────────────
+
+    @app.get("/api/hub/events", include_in_schema=False)
+    async def hub_events_stream(request: Request) -> Response:
+        """consult 진행 중 조직도 카드를 실시간 강조하는 SSE 스트림.
+
+        ⚠️ **loopback 전용이다.** `_origin_gate` 가 원격을 막는다.
+           이벤트는 agent label 과 entity_id 만 담았 비공개 정보가 없지만,
+           loopback 전용으로 제한해 정체 미사지 방어를 일치시킨다.
+        """
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=50)
+        _sse_clients.append(q)
+
+        async def _stream() -> AsyncIterator[bytes]:
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        msg = await asyncio.wait_for(q.get(), timeout=25.0)
+                        yield f"data: {msg}\n\n".encode()
+                    except asyncio.TimeoutError:
+                        yield b":\n\n"
+            finally:
+                with contextlib.suppress(ValueError):
+                    _sse_clients.remove(q)
+
+        return StreamingResponse(
+            _stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/hub/ask", response_model=HubAskResponse)
     async def hub_ask(request: Request, body: HubAskRequest) -> HubAskResponse:
