@@ -271,19 +271,15 @@ def test_all_local_reason_codes_are_accepted(store):
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_inbox_roundtrip(store):
-    store.add_inbox(
-        to_entity_id="person:park",
-        summary="GPU 점유 중 실행 허락 요청",
-        situation=["학습 작업 실행 중", "GPU 0 점유"],
-        draft_answer="지금은 피하고 30분 후 재확인을 권합니다",
-        already_answered=["기법 질문은 자동 응답됨"],
-    )
-    items = store.list_inbox("person:park")
-    assert len(items) == 1
-    assert items[0]["situation"] == ["학습 작업 실행 중", "GPU 0 점유"]
-    assert items[0]["status"] == "open"
-    assert store.list_inbox("person:kim") == ()
+def test_inbox_schema_exists_but_operations_live_in_inbox_module(store):
+    """스키마 DDL 은 `audit.py` 한 곳에만 있고 조작은 `inbox.py` 가 한다.
+
+    테이블 정의가 두 곳에 있으면 갈라진다. 커넥션을 두 개 열면 SQLite 락이
+    충돌하고, DB 파일을 나누면 "한 파일만 지우면 증거가 반쪽"이 된다.
+    """
+    cols = {r[1] for r in store.connection.execute("PRAGMA table_info(inbox)").fetchall()}
+    assert {"item_id", "owner_entity_id", "thread_id", "tier", "status"} <= cols
+    assert not hasattr(store, "add_inbox"), "인박스 조작은 inbox.py 의 일이다"
 
 
 # ══════════════════════════════════════════════════════════════════════

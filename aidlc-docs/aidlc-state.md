@@ -4,9 +4,9 @@
 - **Project Name**: 대리 에이전트 메시 (Delegate Agent Mesh)
 - **Project Type**: Greenfield
 - **Start Date**: 2026-08-19T00:00:00Z
-- **Last Updated**: 2026-08-19T13:10:00Z
-- **Current Stage**: CONSTRUCTION - Code Generation Part 2 (U1 Day 2 완료)
-- **Next Stage**: Day 3 — U2 Store 완성 + U3 Agent/Orchestrator (소유 B)
+- **Last Updated**: 2026-08-19T15:40:00Z
+- **Current Stage**: CONSTRUCTION - Code Generation Part 2 (U1·U2·U3 완료)
+- **Next Stage**: Day 4 — U4 화면 + 목업 픽스처 녹화 (소유 C)
 
 ## Workspace State
 - **Existing Code**: No
@@ -50,8 +50,8 @@
 | Unit | Functional Design | NFR Requirements | NFR Design | Infrastructure Design | Code Gen P1 | Code Gen P2 |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **U1** gatekeeper-core | [x] | [x] | [x] | SKIP | [x] | **[x]** |
-| **U2** knowledge-edge | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
-| **U3** agent-mesh | [x] | [x] | SKIP | SKIP | [x] | [ ] |
+| **U2** knowledge-edge | [x] | SKIP | SKIP | SKIP | [x] | **[x]** |
+| **U3** agent-mesh | [x] | [x] | SKIP | SKIP | [x] | **[x]** |
 | **U4** console-web | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
 | **U5** cloud-broker | SKIP | [x] | [x] | [x] | [x] | [ ] |
 | **U6** demo-corpus-eval | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
@@ -82,7 +82,7 @@
 | **SG1** | Day 1 첫 커밋 전 | `.gitignore`가 자격증명 3종 커버 🔴 | **[x]** 커밋 c91c1b8 검증 |
 | **G1** | Day 1 종료 | `schemas.py` + `vocab.json` 동결 | **[x]** 계약 6종 동결 |
 | **G2** | Day 2 종료 | **기밀 재현율 100%**, 정확도 ≥90% 🔴 | **[x] 통과** `make eval-classify` 11/11=100% · 기밀 3/3 · 함정 1/1 · 하향 0건 |
-| **G3** | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 | [ ] |
+| **G3** | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 | **[x] 통과** `make eval` 38개 · 3막 종단 · 전수 유출 0건 |
 | **SG2~4** | U5 배포 전 | 브로커 인증·최소권한·감사 무결성 | [ ] |
 | **G4** | Day 5 | **유출 0건** (자동 + 육안 전수) 🔴 | [ ] |
 | **G5** | Day 5 | 목업 모드로 3막 전체 통과 | [ ] |
@@ -99,6 +99,10 @@
 | SG10 | `validator.py` 순수성 — I/O·설정 참조 0건 (ast, Lambda 번들 조건) | **[x]** Day 2 신설 |
 | SG11 | `audit` 테이블 추가 전용 — `DELETE`/`UPDATE` 문 부재 (정규식) | **[x]** Day 2 신설 |
 | SG12 | 관문 8개에 `NotImplementedError` 스텁 부재 (ast) | **[x]** Day 2 신설 |
+| SG13 | `orchestrator.py` 에 모델 호출 부재 (ast) | **[x]** Day 3 신설 |
+| SG14 | `agent.py` 에 경계 클라이언트 부재 (ast) | **[x]** Day 3 신설 |
+| SG15 | 최상위 `mesh.llm.broker` import 0건 (전 모듈) | **[x]** Day 3 신설 |
+| SG16 | `inbox` UPDATE 가 감사 흔적을 건드리지 않음 | **[x]** Day 3 신설 |
 
 **G2를 통과하지 못하면 Day 3으로 넘어가지 않는다** (설계 §7.2).
 
@@ -122,14 +126,18 @@
 | 12 | `json.dumps` 의 `\n` 이스케이프가 5-gram 대조를 우회시킨다 | **설계 변경 → 원시 문자열 값을 함께 대조** |
 | 13 | 헤더 등급 표기를 금칙어 검사보다 먼저 보면 하향 경로가 생긴다 | **설계 변경 → 규칙 순서 재배치** |
 | 14 | 슬롯 채우기 실측 0.43s/문서 · 페이로드 562 bytes · 원문 0개 | 확인 |
-| 15 | AWS 임시 자격증명 만료됨 (발견 5가 예측한 대로) | Day 3 전 갱신 필요 |
+| 15 | AWS 임시 자격증명 만료됨 (발견 5가 예측한 대로) | Agent 실호출 전 갱신 필요 |
+| 16 | `select_paths` 프롬프트 326자 · 0.44s — 본문 미포함 확인 | BR-S-02 효과 실측 |
+| 17 | `focus_topic` 닫힌 어휘 3/3 정확 · 0.23~0.26s | **설계 변경 → 자유 문장 요약 폐기** |
+| 18 | 초안 프롬프트에 제목·시점·세션 사실을 넣을 수 없다 | **설계 변경 → 로컬에서 덧붙임** |
 
 ## Current Status
 - **Lifecycle Phase**: CONSTRUCTION
 - **Current Stage**: Code Generation Part 2 — **Day 1~2 완료**
 - **Next Stage**: Day 3 (U2 Step + U3) — Store 완성 · Agent · Orchestrator (소유 B)
-- **Status**: 게이트 G2 통과. Day 3 착수 가능
-- **Blocker (Day 3)**: AWS 임시 자격증명 만료 → 갱신 필요. `AGENT_TRANSPORT=mock` 으로 우회 가능
+- **Status**: 게이트 G2·G3 통과. Day 4 착수 가능
+- **Blocker**: AWS 임시 자격증명 만료 (Day 2 부터) → Agent 실호출 전 갱신 필요.
+  `AGENT_TRANSPORT=mock` 으로 우회 가능. EXAONE(Friendli)은 정상 (0.39s)
 
 ### Day 1 완료 내역 (2026-08-19)
 
@@ -200,10 +208,47 @@
 부수: Day 1 계약에 사내·공개 페이로드 형태가 없었다 → `excerpts` 키 도입 +
 표현별 허용 키 분리 (`STRUCTURED` 에서는 텍스트 키 금지)
 
-**Day 3 에 남은 것** (소유 B)
-- `store.read()` / `select_paths()` / `list_agents()`
-- `agent.py` · `orchestrator.py` · `inbox.py` · `main.py`
-- 게이트 G3: 시나리오 1 종단 통과 + 인용 0개 차단
+### Day 3 완료 내역 (2026-08-19) — U2 Step 5~9 + U3 Step 1~7
+
+보고서: `aidlc-docs/construction/day3-implementation-report.md`
+
+| 항목 | 결과 |
+|---|---|
+| 테스트 | **976개 통과** (unit 896 + property 42 + eval 38) |
+| **게이트 G3** | **3막 종단 통과 · 전수 유출 0건 · 인용 0개 차단** |
+| lint / audit | 통과 · 취약점 0건 |
+| LLM 호출 | EXAONE **5회** (select_paths 1 + focus_topic 3 + preflight 1) · Bedrock 0회 |
+
+**신규 모듈 5개 + Store 완성**
+
+| 모듈 | 레이어 | 역할 |
+|---|:---:|---|
+| `store.read()` | L5 | 2중 검사 · 종류별 파싱 · `run_log` 마지막 200줄 |
+| `store.select_paths()` | L5 | 인덱스 선택. **본문 미포함** (프롬프트 326자 실측) |
+| `store.list_agents()` | L5 | 닫힌 어휘 주제 라벨 · 캐시 · `disclose` 반영 |
+| `agent.py` | L5 | Gatekeeper 경유 호출 · 에스컬레이션 초안 |
+| `inbox.py` | L5 | 3버튼 · `VerifiedQA` 환류 · UPDATE 범위 제한 |
+| `orchestrator.py` | L6 | `prepare`/`send` · `branch`/`merge` · 30초 상한 |
+| `main.py` | L7 | FastAPI 9개 엔드포인트 · 보안 헤더 4개 |
+| `scripts/demo.py` | — | 3막 시연 대본 (대역 주입 테스트로 검증) |
+
+**Day 3 에 발견·수정한 결함 4건** (`preflight-findings.md` §11)
+
+1. 🔴 **초안 입력이 전부 경계를 넘어서는 안 되는 것들이었다** — 근거 제목·시점·
+   세션 사실·부분 응답. 설계가 "`display_title` 만"이라고 쓴 것은 `internal_path`
+   와 비교한 말이었지만 경계를 넘는 맥락에서는 제목도 원문 파생물이다.
+   → 검증된 envelope 재사용 + 제목·시점은 **신뢰 구역 안에서** 덧붙인다
+2. 🔴 **목록 요약을 자유 문장으로 만들면 검사할 방법이 없다** — 사후 검사 구조는
+   §3.1 에서 기각한 것이다. → 닫힌 라벨 집합(`FOCUS_TOPICS` 7개)에서 선택
+3. **브로커를 `main.py` 가 만들면 경계를 넘는 모듈이 늘어난다** →
+   `Gatekeeper.build()` 팩토리로 생성도 통로 안에 뒀다
+4. **`api_models` 를 소유(U3) 기준으로 L5 에 뒀다** — 레이어는 소유가 아니라
+   의존 순서다 → L1
+
+**Day 4 에 남은 것** (소유 C)
+- `src/mesh/web/` 3개 파일 (CSP 에 `unsafe-inline` 이 없으므로 별도 파일)
+- 3막 live 녹화 → 목업 픽스처 커밋 (`make record-fixtures`)
+- 게이트 G4·G5: 유출 0건 육안 전수 + 목업 모드 3막 통과
 
 ## Open Items for User
 

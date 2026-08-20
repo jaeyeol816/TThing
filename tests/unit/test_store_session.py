@@ -396,19 +396,13 @@ def test_each_agent_can_read_own_files(store):
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_read_is_not_implemented_yet(store):
-    with pytest.raises(NotImplementedError, match="Day 3"):
-        store.read(["corpus/kim/docs/auth-design.md"], "person:kim")
+def test_no_store_method_is_still_a_stub():
+    """Day 3 완료 확인 — `NotImplementedError` 로 남은 메서드가 없다.
 
-
-async def test_select_paths_is_not_implemented_yet(store):
-    with pytest.raises(NotImplementedError, match="Day 3"):
-        await store.select_paths(store.load_session("person:kim"), "질문")
-
-
-async def test_list_agents_is_not_implemented_yet(store):
-    with pytest.raises(NotImplementedError, match="Day 3"):
-        await store.list_agents()
+    Day 1 에는 이 테스트가 반대 방향("스텁이어야 한다")이었다.
+    """
+    src = (REPO / "src" / "mesh" / "store.py").read_text(encoding="utf-8")
+    assert "NotImplementedError" not in src
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -426,5 +420,6 @@ def test_store_does_not_do_global_scan():
 def test_store_does_not_classify():
     """등급 판정은 Gatekeeper 의 일이다. store 는 tier 를 채우지 않는다."""
     src = (REPO / "src" / "mesh" / "store.py").read_text(encoding="utf-8")
-    assert "rule_tier" not in src
-    assert "classify" not in src
+    # 등급 판정의 흔적이 없어야 한다. 문서 종류 판정(`source_kind_of`)은 별개다.
+    for marker in ("rule_tier", "exaone_tier", "Tier.SECRET", "ClassificationRules", "banned"):
+        assert marker not in src, marker

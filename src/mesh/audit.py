@@ -109,17 +109,40 @@ CREATE TABLE IF NOT EXISTS local_queries (
 );
 CREATE INDEX IF NOT EXISTS idx_local_at ON local_queries(at DESC);
 
+-- 에스컬레이션 인박스. 조작은 `inbox.py` 가 한다 (스키마만 여기 둔다 —
+-- 테이블 정의가 두 곳에 있으면 갈라진다).
+--
+-- ⚠️ `UPDATE` 는 `status`/`resolved_at`/`resolution_text`/`redirect_to` 만
+--    대상으로 한다. `draft_*`·`situation_json` 은 감사 흔적이므로 고치지 않는다.
 CREATE TABLE IF NOT EXISTS inbox (
     item_id               TEXT PRIMARY KEY,
     at                    TEXT NOT NULL,
-    to_entity_id          TEXT NOT NULL,
-    summary               TEXT NOT NULL,
+    owner_entity_id       TEXT NOT NULL,
+    asker                 TEXT NOT NULL,
+    thread_id             TEXT NOT NULL,
+    question_summary      TEXT NOT NULL,
+    draft_summary         TEXT NOT NULL,
     situation_json        TEXT NOT NULL,
     draft_answer          TEXT NOT NULL,
     already_answered_json TEXT NOT NULL,
-    status                TEXT NOT NULL DEFAULT 'open'
+    citations_json        TEXT NOT NULL DEFAULT '[]',
+    tier                  TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'open',
+    resolved_at           TEXT,
+    resolution_text       TEXT,
+    redirect_to           TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_inbox_to ON inbox(to_entity_id, status);
+CREATE INDEX IF NOT EXISTS idx_inbox_owner  ON inbox(owner_entity_id, status);
+CREATE INDEX IF NOT EXISTS idx_inbox_thread ON inbox(thread_id);
+
+-- 질의 하나의 최종 처분. 자동 응답률(목표 >= 50%)의 분모·분자가 된다.
+-- `audit` 과 분리한다 — 처분은 경계를 넘은 것과 무관하고, 폴백도 처분을 갖는다.
+CREATE TABLE IF NOT EXISTS outcomes (
+    request_id    TEXT PRIMARY KEY,
+    at            TEXT NOT NULL,
+    disposition   TEXT NOT NULL,
+    answer_count  INTEGER NOT NULL DEFAULT 0
+);
 """
 
 _AUDIT_COLUMNS: tuple[str, ...] = (
@@ -345,57 +368,63 @@ class AuditLog:
     def local_count(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM local_queries").fetchone()[0])
 
+    def count_today(self, target_entity_id: str, *, now: datetime) -> int:
+        """오늘 이 사람에게 온 질문 수 (`audit` + `local_queries`).
+
+        신뢰 구역 안에서 처리된 질의도 "물어본 것"이므로 함께 센다 —
+        감사 로그 탭에는 안 보이지만 카운트에서 빠지면 숫자가 거짓이 되고,
+        `daily_limit` 을 우회하는 경로가 생긴다.
+
+        `kind='request'` 만 센다. `result` 레코드는 같은 호출의 사본이다.
+        """
+        day = now.date().isoformat()
+        crossed = self._conn.execute(
+            "SELECT COUNT(*) FROM audit "
+            "WHERE target_entity_id = ? AND kind = 'request' AND substr(at, 1, 10) = ?",
+            (target_entity_id, day),
+        ).fetchone()[0]
+        local = self._conn.execute(
+            "SELECT COUNT(*) FROM local_queries "
+            "WHERE target_entity_id = ? AND substr(at, 1, 10) = ?",
+            (target_entity_id, day),
+        ).fetchone()[0]
+        return int(crossed) + int(local)
+
+    def disposition_counts(self) -> dict[str, int]:
+        """처분 분포. `/api/health` 의 평가 지표로 그대로 쓴다 (요구사항 §6)."""
+        rows = self._conn.execute(
+            "SELECT disposition, COUNT(*) FROM outcomes GROUP BY disposition"
+        ).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def record_outcome(self, *, request_id: str, disposition: str, answer_count: int) -> None:
+        """질의 하나의 최종 처분. 자동 응답률 계산의 분모가 된다.
+
+        `audit` 과 분리한 이유: 처분은 경계를 넘은 것과 무관하다 —
+        `answer_in_zone` 폴백도 처분(`blocked`)을 갖는다.
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO outcomes (request_id, at, disposition, answer_count) "
+            "VALUES (?, ?, ?, ?)",
+            (request_id, self.cfg.now().isoformat(), disposition, answer_count),
+        )
+        self._conn.commit()
+
     def payloads(self) -> tuple[tuple[str, str], ...]:
         """`(record_id, payload_json)`. 전수 유출 검사용."""
         rows = self._conn.execute("SELECT record_id, payload_json FROM audit").fetchall()
         return tuple((r["record_id"], r["payload_json"]) for r in rows)
 
-    # ── 에스컬레이션 인박스 ──────────────────────────────────────────
+    # ── 인박스 접근 (조작은 inbox.py 가 한다) ────────────────────────
 
-    def add_inbox(
-        self,
-        *,
-        to_entity_id: str,
-        summary: str,
-        situation: Sequence[str],
-        draft_answer: str,
-        already_answered: Sequence[str] = (),
-    ) -> str:
-        item_id = f"inb_{uuid.uuid4().hex[:20]}"
-        self._conn.execute(
-            "INSERT INTO inbox (item_id, at, to_entity_id, summary, situation_json, "
-            "draft_answer, already_answered_json, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
-            (
-                item_id,
-                self.cfg.now().isoformat(),
-                to_entity_id,
-                summary,
-                json.dumps(list(situation), ensure_ascii=False),
-                draft_answer,
-                json.dumps(list(already_answered), ensure_ascii=False),
-            ),
-        )
-        self._conn.commit()
-        return item_id
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """`inbox.py` 가 같은 DB 를 쓰게 한다.
 
-    def list_inbox(self, to_entity_id: str, *, limit: int = 50) -> tuple[dict, ...]:
-        rows = self._conn.execute(
-            "SELECT * FROM inbox WHERE to_entity_id = ? ORDER BY at DESC LIMIT ?",
-            (to_entity_id, int(limit)),
-        ).fetchall()
-        return tuple(
-            {
-                "item_id": r["item_id"],
-                "at": r["at"],
-                "to_entity_id": r["to_entity_id"],
-                "summary": r["summary"],
-                "situation": json.loads(r["situation_json"]),
-                "draft_answer": r["draft_answer"],
-                "already_answered": json.loads(r["already_answered_json"]),
-                "status": r["status"],
-            }
-            for r in rows
-        )
+        커넥션을 두 개 열면 SQLite 락이 충돌하고, DB 파일을 둘로 나누면
+        "한 파일만 지우면 증거가 반쪽" 이 된다.
+        """
+        return self._conn
 
     # ── 전수 유출 검사 (FR-16, S-05) ─────────────────────────────────
 

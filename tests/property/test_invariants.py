@@ -24,6 +24,7 @@ from mesh.pseudonymizer import apply as pseudonymize
 from mesh.rehydrator import rehydrate_text, symbols_in
 from mesh.schemas import (
     DROP,
+    Disposition,
     Mapping,
     PayloadEnvelope,
     Representation,
@@ -502,3 +503,271 @@ def test_adversarial_generator_actually_produces_adversarial_input():
     assert saw_source_fragment, "원문 조각을 슬롯 값에 넣지 않는다"
     assert saw_type_mismatch, "타입 불일치를 만들지 않는다"
     assert saw_surviving_value, "모든 값이 버려진다 — 조립기를 시험하지 못한다"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PB-S1 ~ PB-S5 · Store 불변식 (U2)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@given(
+    rel=st.one_of(
+        st.text(max_size=40),
+        st.from_regex(r"\A(\.\./){1,5}[a-z/]{1,20}\Z", fullmatch=True),
+        st.sampled_from(["/etc/passwd", "~/x", "C:/x", "", "  ", "corpus/../../x"]),
+    )
+)
+def test_pbs1_escape_always_raises_or_stays_inside(rel, tmp_path_factory):
+    """PB-S1 — `safe_resolve()` 는 root 밖 경로에 항상 예외를 던진다.
+
+    세션 JSON 은 사람이 편집하므로 임의 문자열이 들어올 수 있다.
+    """
+    from mesh.config import safe_resolve
+    from mesh.exceptions import PathEscapeError
+
+    root = tmp_path_factory.mktemp("root")
+    try:
+        resolved = safe_resolve(rel, root)
+    except PathEscapeError:
+        return
+    assert resolved.resolve().is_relative_to(root.resolve())
+
+
+@given(
+    focus=st.text(max_size=60),
+    summary=st.text(max_size=60),
+    paths=st.lists(
+        st.from_regex(r"\Acorpus/[a-z]{1,8}/[a-z]{1,8}\.md\Z", fullmatch=True), max_size=4
+    ),
+)
+def test_pbs2_session_serialization_roundtrip(focus, summary, paths):
+    """PB-S2 — `Session` 직렬화 왕복 항등."""
+    from datetime import UTC, datetime
+
+    from mesh.schemas import Session
+
+    session = Session(
+        entity_id="person:kim",
+        updated_at=datetime(2026, 8, 19, 14, 31, tzinfo=UTC),
+        focus=focus,
+        summary=summary,
+        open_paths=tuple(paths),
+    )
+    again = Session.model_validate(json.loads(session.model_dump_json()))
+    assert again == session
+
+
+@given(minutes=st.integers(min_value=0, max_value=60 * 24 * 5))
+def test_pbs3_freshness_degrades_monotonically(minutes):
+    """PB-S3 — 시간이 지나면 신선도가 좋아지지 않는다."""
+    from datetime import UTC, datetime, timedelta
+
+    from mesh.schemas import Freshness, Session
+    from mesh.store import freshness
+
+    base = datetime(2026, 8, 19, 14, 31, tzinfo=UTC)
+    session = Session(entity_id="person:kim", updated_at=base, focus="", summary="")
+
+    earlier = freshness(session, base + timedelta(minutes=minutes), stale_minutes=15)
+    later = freshness(session, base + timedelta(minutes=minutes + 1), stale_minutes=15)
+    rank = {Freshness.LIVE: 0, Freshness.STALE: 1, Freshness.EXPIRED: 2}
+    assert rank[later] >= rank[earlier]
+
+
+@given(
+    focus=st.text(min_size=1, max_size=80),
+    summary=st.text(min_size=1, max_size=80),
+    topic=st.sampled_from(
+        ["인증 관련 작업", "데이터 파이프라인 작업", "기타 작업", "made up label", ""]
+    ),
+)
+def test_pbs4_focus_summary_never_echoes_session_text(focus, summary, topic):
+    """🔴 PB-S4 — 목록 요약이 `Session.focus`/`summary` 를 되뇌지 않는다.
+
+    이 화면은 인증 없이 보인다. 요약이 원문을 되뇌면 게이트키퍼를 우회한 유출이다.
+    닫힌 라벨 집합에서만 나오므로 원문이 섞일 수 없다.
+    """
+    import asyncio
+
+    from mesh.gatekeeper import FOCUS_TOPICS
+
+    assume(len(focus.strip()) > 3)
+
+    class Stub:
+        async def complete_json(self, system, user, *, name="generic", max_tokens=800):
+            return {"topic": topic}
+
+    class Data:
+        class banned:  # noqa: N801
+            @staticmethod
+            def hits(_text):
+                return ()
+
+    class GK:
+        exaone = Stub()
+        data = Data()
+
+    from mesh.gatekeeper import Gatekeeper
+
+    label = asyncio.run(Gatekeeper.summarize_focus(GK(), focus, summary))
+    if label is None:
+        return
+    assert label.removesuffix(" 중") in FOCUS_TOPICS
+    assert focus not in label
+    assert summary not in label
+
+
+@given(
+    paths=st.lists(
+        st.from_regex(r"\Acorpus/(kim|park|choi)/(docs|notes)/[a-z]{1,8}\.md\Z", fullmatch=True),
+        max_size=5,
+    )
+)
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=50)
+def test_pbs5_read_results_are_always_in_scope(paths, full_cfg):
+    """PB-S5 — `read()` 결과의 모든 `internal_path` 가 `knowledge_scope` 에 매치된다.
+
+    `full_cfg` 픽스처가 입력마다 재생성되지 않아도 괜찮다 — 이 테스트는
+    설정을 변경하지 않고 읽기만 한다.
+    """
+    from fnmatch import fnmatch
+
+    from mesh.config import DataBundle
+    from mesh.exceptions import ScopeViolationError
+    from mesh.store import KnowledgeStore
+
+    store = KnowledgeStore(full_cfg, DataBundle(full_cfg))
+    scopes = store.data.agent("person:kim").knowledge_scope
+    try:
+        chunks = store.read(paths, "person:kim")
+    except ScopeViolationError:
+        return  # scope 밖은 거부된다 — 그것도 불변식의 일부다
+    for chunk in chunks:
+        assert any(fnmatch(chunk.internal_path, p) for p in scopes), chunk.internal_path
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PB-O1 ~ PB-O6 · Orchestrator 불변식 (U3)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _answers(*, n: int, confidence: float, citations: int, text: str = "답", title: str = "문서"):
+    from mesh.schemas import Citation, RehydratedAnswer
+
+    return [
+        RehydratedAnswer(
+            entity_id=f"person:p{i}",
+            agent_label=f"p{i} 의 Agent",
+            text=f"{text}{i}",
+            confidence=confidence,
+            citations=tuple(
+                Citation(ref=f"C_{chr(65 + j)}", display_title=f"{title}{i}", tier=Tier.INTERNAL)
+                for j in range(citations)
+            ),
+            tier=Tier.INTERNAL,
+            used_external_agent=True,
+        )
+        for i in range(n)
+    ]
+
+
+@given(
+    confidence=st.floats(min_value=0.0, max_value=1.0),
+    count=st.integers(min_value=1, max_value=2),
+)
+def test_pbo1_zero_citations_always_escalates(confidence, count):
+    """🔴 PB-O1 — 인용 0개면 신뢰도와 무관하게 `ESCALATE` (BR-O-04).
+
+    근거 없는 생성은 사용자에게 도달하지 않는다.
+    """
+    from mesh.orchestrator import branch
+
+    answers = _answers(n=count, confidence=confidence, citations=0)
+    assert branch(answers, auto=0.75, escalate=0.45) is Disposition.ESCALATE
+
+
+@given(
+    low=st.floats(min_value=0.0, max_value=1.0),
+    high=st.floats(min_value=0.0, max_value=1.0),
+)
+def test_pbo2_branch_is_monotonic_in_confidence(low, high):
+    """PB-O2 — 신뢰도가 높아지면 처분이 나빠지지 않는다."""
+    from mesh.orchestrator import branch
+
+    assume(low <= high)
+    rank = {Disposition.ESCALATE: 0, Disposition.UNVERIFIED: 1, Disposition.AUTO: 2}
+    a = branch(_answers(n=1, confidence=low, citations=1), auto=0.75, escalate=0.45)
+    b = branch(_answers(n=1, confidence=high, citations=1), auto=0.75, escalate=0.45)
+    assert rank[b] >= rank[a]
+
+
+@given(
+    count=st.integers(min_value=1, max_value=2),
+    confidence=st.floats(min_value=0.0, max_value=1.0),
+    citations=st.integers(min_value=0, max_value=3),
+)
+def test_pbo3_merge_never_drops_an_answer(count, confidence, citations):
+    """🔴 PB-O3 — `merge()` 가 답을 하나도 버리지 않는다.
+
+    하나를 조용히 고르면 나머지 하나는 영원히 묻힌다.
+    """
+    from mesh.orchestrator import merge
+
+    answers = _answers(n=count, confidence=confidence, citations=citations)
+    merged = merge(answers, order=[a.entity_id for a in answers], auto=0.75, escalate=0.45)
+    assert len(merged.answers) == count
+    assert {a.entity_id for a in merged.answers} == {a.entity_id for a in answers}
+
+
+@given(swap=st.booleans(), confidence=st.floats(min_value=0.0, max_value=1.0))
+def test_pbo4_merge_is_order_independent(swap, confidence):
+    """PB-O4 — 병렬 응답 도착 순서가 결과를 바꾸지 않는다 (BR-O-07).
+
+    화면이 매번 달라지면 데모가 흔들린다.
+    """
+    from mesh.orchestrator import merge
+
+    answers = _answers(n=2, confidence=confidence, citations=1)
+    order = [a.entity_id for a in answers]
+    arrival = list(reversed(answers)) if swap else answers
+    merged = merge(arrival, order=order, auto=0.75, escalate=0.45)
+    assert [a.entity_id for a in merged.answers] == order
+
+
+@given(
+    question=st.text(min_size=1, max_size=200).filter(lambda s: s.strip()),
+    targets=st.lists(
+        st.sampled_from(["person:kim", "person:park", "person:choi"]),
+        min_size=1,
+        max_size=2,
+        unique=True,
+    ),
+)
+def test_pbo5_ask_request_roundtrip(question, targets):
+    """PB-O5 — `AskRequest` 직렬화 왕복."""
+    from mesh.api_models import AskRequest
+
+    req = AskRequest(question=question, asker="person:lee", targets=targets)
+    again = AskRequest.model_validate(json.loads(req.model_dump_json()))
+    assert again == req
+
+
+@given(
+    count=st.integers(min_value=1, max_value=2),
+    confidence=st.floats(min_value=0.0, max_value=1.0),
+    title=st.text(min_size=1, max_size=30),
+)
+def test_pbo6_ask_result_json_has_no_internal_path(count, confidence, title):
+    """PB-O6 — `AskResult` JSON 에 `internal_path` 문자열이 없다 (FR-43).
+
+    경로 자체가 정보를 준다 — `corpus/customer-H/` 는 고객사명을 노출한다.
+    `Citation` 에 그 필드가 아예 없으므로 담을 방법이 구조적으로 없다.
+    """
+    from mesh.api_models import AskResult
+    from mesh.orchestrator import merge
+
+    answers = _answers(n=count, confidence=confidence, citations=1, title=title)
+    merged = merge(answers, order=[a.entity_id for a in answers], auto=0.75, escalate=0.45)
+    blob = AskResult(request_id="req_x", merged=merged).model_dump_json()
+    assert "internal_path" not in blob
+    assert "corpus/" not in blob

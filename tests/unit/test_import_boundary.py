@@ -166,12 +166,43 @@ def test_boundary_crossers_are_a_short_list():
     assert len(BOUNDARY_CROSSERS) <= 3
 
 
-def test_gatekeeper_imports_broker_only_under_type_checking(parsed):
-    """`gatekeeper` 는 타입 힌트로만 broker 를 참조한다 (순환 import 회피).
-    실제 인스턴스는 `__init__` 으로 주입받는다."""
+def _module_level_imports(tree: ast.Module) -> list[str]:
+    """**최상위** import 만. 함수 스코프 import 는 제외한다."""
+    out: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            out += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out.append(node.module)
+    return out
+
+
+def test_gatekeeper_does_not_import_broker_at_module_level(parsed):
+    """`gatekeeper` 는 최상위에서 broker 를 import 하지 않는다.
+
+    두 가지를 지키려는 것이다:
+      - 타입 힌트는 `TYPE_CHECKING` 블록으로 (순환 결합 회피)
+      - 실제 생성은 `Gatekeeper.build()` 안의 **함수 스코프** import 로
+
+    생성을 gatekeeper 안에 두는 것이 규칙 1 의 핵심이다. `main.py` 가
+    `BrokerClient` 를 만들면 경계를 넘는 모듈이 하나 늘어난다 (SECURITY-11).
+    그러면 "단일 통로"가 아니게 된다.
+
+    함수 스코프로 두는 이유는 mock 모드에서 `httpx`·`boto3` 경로를 끌고 오지
+    않게 하려는 것이다.
+    """
     tree, _ = parsed["mesh.gatekeeper"]
-    runtime = [m for m, _ in _runtime_imports(tree)]
-    assert "mesh.llm.broker" not in runtime
+    assert "mesh.llm.broker" not in _module_level_imports(tree)
+
+
+def test_no_module_imports_broker_at_module_level_except_itself(parsed):
+    """최상위 import 는 어디에도 없어야 한다 — 생성조차 함수 안에서만 한다."""
+    offenders = [
+        mod
+        for mod, (tree, _) in parsed.items()
+        if mod != "mesh.llm.broker" and "mesh.llm.broker" in _module_level_imports(tree)
+    ]
+    assert not offenders, offenders
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -219,7 +250,7 @@ def test_only_designated_modules_handle_mapping(parsed):
 #: 낮은 번호가 아래이고, 의존은 항상 위 -> 아래 방향이다.
 #:
 #:   L0  기반      설정 · 타입 · 예외. 서로만 참조
-#:   L1  지원      순수 함수(validator, rehydrator) + 픽스처 I/O
+#:   L1  지원      순수 함수(validator, rehydrator) + 타입 계약(api_models) + 픽스처 I/O
 #:   L2  모델      LLM 클라이언트
 #:   L3  변환      판정 · 추출 · 가명화
 #:   L4  경계      gatekeeper · audit  <- 여기만 경계를 넘는다
@@ -233,6 +264,10 @@ LAYERS: dict[str, int] = {
     "mesh.schemas": 0,
     "mesh.validator": 1,
     "mesh.rehydrator": 1,
+    # HTTP 타입 계약. `mesh.schemas` 만 참조하는 잎 모듈이므로 아래쪽에 둔다.
+    # (Day 1 에는 U3 소유라는 이유로 L5 에 뒀는데, 레이어는 소유가 아니라
+    #  의존 순서를 나타낸다. L5 에 두면 같은 레이어의 inbox 가 못 쓴다.)
+    "mesh.api_models": 1,
     "mesh.llm": 1,
     "mesh.llm.fixtures": 1,
     "mesh.llm.exaone": 2,
@@ -245,7 +280,6 @@ LAYERS: dict[str, int] = {
     "mesh.store": 5,
     "mesh.agent": 5,
     "mesh.inbox": 5,
-    "mesh.api_models": 5,
     "mesh.orchestrator": 6,
     "mesh.main": 7,
 }

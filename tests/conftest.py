@@ -142,3 +142,80 @@ def bundle(cfg):
     from mesh.config import DataBundle
 
     return DataBundle(cfg, load_agent_configs=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 종단 배선 (Day 3)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def full_data_root(tmp_path: Path, monkeypatch) -> Path:
+    """코퍼스·세션까지 복사한 데이터 루트.
+
+    실제 코퍼스를 쓴다 — 손으로 만든 샘플로 테스트하면 실물이 깨져도 통과한다.
+    """
+    import shutil
+
+    for name in REQUIRED_DATA_FILES + ("labels.json",):
+        (tmp_path / name).write_bytes((DATA / name).read_bytes())
+    shutil.copytree(DATA / "corpus", tmp_path / "corpus")
+    shutil.copytree(DATA / "sessions", tmp_path / "sessions")
+    (tmp_path / "verified").mkdir()
+    (tmp_path / "fixtures").mkdir()
+
+    monkeypatch.setenv("MESH_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("EXAONE_MODE", "mock")
+    monkeypatch.setenv("AGENT_TRANSPORT", "mock")
+    monkeypatch.setenv("MESH_BIND_HOST", "127.0.0.1")
+    # 세션 신선도를 고정한다 — 시연 날짜가 바뀌어도 재현된다 (BR-S-04)
+    monkeypatch.setenv("MESH_DEMO_NOW", "2026-08-19T14:35:00+09:00")
+    for key in ("FRIENDLI_TOKEN", "BROKER_API_URL", "BROKER_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    return tmp_path
+
+
+@pytest.fixture
+def full_cfg(full_data_root):
+    from mesh.config import Config
+
+    return Config.load()
+
+
+@pytest.fixture
+def wiring(full_cfg):
+    """실제 객체 그래프 + LLM 대역.
+
+    돌려주는 것은 `mesh.main.Services` 다. 조립·검증·감사·재수화는 실제 코드가
+    돈다 — 대역은 LLM 응답만 흉내 낸다.
+    """
+    from mesh.audit import AuditLog
+    from mesh.config import DataBundle
+    from mesh.gatekeeper import Gatekeeper
+    from mesh.main import Services
+    from tests.fakes import FakeBroker, FakeExaone
+
+    # 후보를 전부 고르게 한다 — 선택 실패 폴백이 아니라 정상 경로를 태운다
+    exaone = FakeExaone(selected=[0, 1, 2])
+    broker = FakeBroker(draft_model_id=full_cfg.draft_model_id)
+    data = DataBundle(full_cfg)
+    audit = AuditLog(full_cfg)
+    gatekeeper = Gatekeeper(full_cfg, data, exaone, broker, audit)
+    services = Services(full_cfg, data=data, audit=audit, exaone=exaone, gatekeeper=gatekeeper)
+    services.fake_exaone = exaone  # type: ignore[attr-defined]
+    services.fake_broker = broker  # type: ignore[attr-defined]
+    yield services
+    audit.close()
+
+
+@pytest.fixture
+def client(wiring):
+    """`TestClient`. 실제 앱 + 대역 LLM."""
+    from fastapi.testclient import TestClient
+
+    from mesh.main import create_app
+
+    app = create_app(wiring.cfg, services=wiring)
+    with TestClient(app) as c:
+        c.services = wiring  # type: ignore[attr-defined]
+        yield c

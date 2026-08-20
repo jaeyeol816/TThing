@@ -312,3 +312,109 @@ Schema refinement: the role field was moved out of vocab.json slots and into a t
 **Context**: todo #11 완료
 
 ---
+
+## Day 3 구현 요청
+**Timestamp**: 2026-08-19T14:10:00Z
+**User Input**: "이어서 day 3 부분에 대한 구현을 진행해주세요"
+**AI Response**: U2 Step 5~9 (Store 완성) + U3 Step 1~7 (Agent · Orchestrator · Inbox · FastAPI) 구현 + 게이트 G3.
+**Context**: CONSTRUCTION / Code Generation Part 2 / U2·U3 Day 3
+
+---
+
+## Day 3 · store.read / select_paths / list_agents (U2 Step 5~7)
+**Timestamp**: 2026-08-19T14:35:00Z
+**AI Response**:
+`read()` — 2중 검사(`safe_resolve` + `knowledge_scope`). 처리를 다르게 했다: 경로 탈출은 그 파일만 **건너뛴다**(세션 JSON 이 오래되어 파일이 지워졌을 수 있고 그 하나로 질의가 죽으면 안 된다), scope 위반은 **예외를 올린다**(설정 오류이거나 공격). `Chunk.tier` 미설정. 예외 하나 — `verified_chunks()` 는 이미 판정된 등급을 옮겨온다(BR-S-05).
+`candidate_paths()` — `open_paths` + `recent_edits` + `recent_runs[].log`. 🔴 `train.log` 는 `recent_runs[].log` 에만 있어서 빠뜨리면 시나리오 2 의 "지금 학습 중" 답이 불가능해진다.
+`source_kind_of()` — 이름에 `classify` 를 쓰지 않았다. 이 저장소에서 "분류"는 등급 판정을 뜻하고, 이름이 겹치면 "store 가 등급을 판정하지 않는다"는 규칙이 흐려진다. (Day 2 에 `classify_source` 로 만들었더니 기존 문자열 검사 테스트가 걸렸다 — 그 테스트도 ast 성격으로 정밀화했다.)
+`select_paths()` — 인덱스 배열만 받는다(경로 문자열을 생성하게 하면 존재하지 않는 경로를 만들고 그것이 `read()` 의 경로 검사로 들어간다). 실패·형식오류·선택0개 → 후보 전체(fail closed 방향).
+
+🔴 **설계 변경 (발견 18)**: `BR-S-06` 의 "식별자 제거 요약"을 자유 문장으로 만들면 **그 문장에 원문이 섞였는지 사후에 검사해야 한다** — §3.1 에서 기각한 구조("무엇을 지울까", 검사를 잊으면 유출)이고 이 화면은 인증 없이 보인다. 조치: `Gatekeeper.summarize_focus()` 가 닫힌 라벨 집합(`FOCUS_TOPICS` 7개)에서 하나를 고르게 한다. 범위 밖·실패 → `None`(원문 폴백 없음). 원문이 섞일 채널이 존재하지 않으므로 검사할 것도, 잊을 검사도 없다.
+**Context**: todo #1, #2, #3 완료
+
+---
+
+## Day 3 · agent.py (U3 Step 1)
+**Timestamp**: 2026-08-19T14:52:00Z
+**AI Response**: `Gatekeeper.ask_agent()` 만 호출. `boto3`·`BrokerClient` import 없음(ast 강제).
+`build_system_prompt` 을 `gatekeeper.py`(L4)에 두고 여기서 재수출했다. `ask_agent()` 가 프롬프트를 필요로 하는데 L4 는 L5(agent)를 import 할 수 없다. 구현이 두 곳에 생기면 **필수 문구가 빠진 경로**가 만들어진다.
+
+🔴 **설계 결함 발견 (발견 17)**: `BR-AG-04` 가 초안 프롬프트에 넣으라고 한 것들을 하나씩 확인해 보니 **뒤 세 개가 전부 경계를 넘어서는 안 되는 것**이었다 — 근거 제목(`"고객사 요구사항명세서"` 에 고객사가 있다, FR-43 과 같은 이유) · 근거 시점(일정·날짜는 `_intentionally_absent`) · 세션 사실(`Session.focus`/`summary` 는 원문 취급) · Agent 부분 응답(어휘 사전 밖 자유 문자열이라 검증 2단계 통과 불가). 설계가 "`display_title` 만"이라고 쓴 것은 `internal_path` 와 비교한 말이었지만 **경계를 넘는 맥락에서는 제목도 원문 파생물**이다.
+조치: `Gatekeeper.ask_draft()` 신설 — **이미 검증을 통과한 envelope 을 그대로 재사용**하고 프롬프트·모델만 바꾼다(haiku). 새 페이로드를 만들지 않으므로 재검증도 필요 없고 검증 없이 나가는 경로도 없다. 제목·시점·공식성·세션 사실은 **응답이 돌아온 뒤 신뢰 구역 안에서** `situation` 에 덧붙인다. `situation` 순서도 로컬 사실이 먼저다 — 담당자가 먼저 읽는 것은 "무엇을 근거로 하는가"이고 그건 애초에 모델이 만들 수 없는 정보다.
+초안 실패 시 예외를 올리지 않고 결정적 폴백 초안을 만든다 — 초안이 없어서 에스컬레이션이 사라지는 것이 최악이다.
+**Context**: todo #4 완료
+
+---
+
+## Day 3 · orchestrator.py (U3 Step 2~3)
+**Timestamp**: 2026-08-19T15:05:00Z
+**AI Response**: `branch()` 가 인용 검사를 신뢰도보다 **먼저** 한다(BR-O-04) — 이 순서가 자동 응답의 인용 준수율을 구조적으로 100% 로 만든다. 2명이면 `min()`.
+`is_divergent()` 는 텍스트 다름 **AND** 근거 문서 다름의 논리곱. LLM 미사용. 이름이 `is_conflicting` 이 아닌 것이 설계 결정(단정 vs 관찰).
+`merge()` 는 요청 순서 유지. 신뢰도 정렬 금지(사용자가 위쪽을 정답으로 읽는다).
+`_send_all()` 을 2단계로 나눴다 — ① 모든 답을 모으고 call 단위로 처분 결정 ② 그다음 에스컬레이션. ②가 뒤인 것이 `already_answered`("다른 조각은 이미 답변됨")를 채우기 위해서다. 전체를 묶어 `branch()` 하면 `min()` 때문에 이미 답이 나온 조각까지 에스컬레이션된다(설계 §8 시나리오 2).
+`_blocked_call()` 이 폴백을 동봉 — `PreparedCall` 의 validator 가 `fallback` 없는 `blocked` 를 거부하므로 "차단만 하고 답을 안 주는 것"이 타입 수준에서 불가능하다.
+`thread_id = request_id` (BR-I-04). 초기에 `hash(question)` 기반 헬퍼로 만들었다가 `PendingRequest.request_id` 로 정리했다.
+설계의 완료 기준 `grep -c "exaone|bedrock|broker" == 0` 은 `reason="broker_unavailable"` 같은 **이유 코드**까지 잡아 무의미하다 → ast 로 import 와 모델 메서드 호출을 검사한다.
+**Context**: todo #5, #6 완료
+
+---
+
+## Day 3 · inbox.py (U3 Step 4)
+**Timestamp**: 2026-08-19T15:14:00Z
+**AI Response**: 스키마 DDL 은 `audit.py` 한 곳에만 두고(정의가 두 곳이면 갈라진다) 조작은 `inbox.py` 가 한다. `AuditLog.connection` 을 공유 — 커넥션을 두 개 열면 SQLite 락이 충돌하고 DB 파일을 나누면 "한 파일만 지우면 증거가 반쪽"이 된다. Day 2 의 `audit.add_inbox`/`list_inbox` 는 제거했고 `inbox` 테이블을 `InboxItem` 계약(owner/thread/tier/status/resolved_at/...)에 맞게 확장했다.
+`UPDATE` 를 `MUTABLE_COLUMNS` 4개로 제한. `draft_*`·`situation_json`·`citations_json` 은 감사 흔적이다. 테스트가 SQL 의 대상 컬럼을 파싱해 검사한다.
+재해결 금지(감사 흔적을 흐린다) → 409. `not_me` 는 환류하지 않는다(담당자가 답을 준 것이 아니다). 승인 환류 시 `tier` 보존.
+**Context**: todo #7 완료
+
+---
+
+## Day 3 · main.py (U3 Step 5)
+**Timestamp**: 2026-08-19T15:26:00Z
+**AI Response**: `/docs`·`/redoc`·`/openapi.json` 기본 비활성(OpenAPI 스키마가 내부 구조를 전부 노출). CORS 미들웨어 없음. `StaticFiles` 없이 3개 파일 명시 매핑. 보안 헤더 4개. 전역 예외 핸들러가 `correlation_id` 만 준다.
+`check_bind_host()` 가 localhost 가 아니면 **시작을 막는다** — 경고만 하면 아무도 읽지 않는다. `MESH_ALLOW_NETWORK_BIND=1` 로 명시적 확인.
+410 Gone 을 쓰는 이유: envelope 은 **있었다가 없어진** 것이다(일회용 + TTL). 404 면 클라이언트가 "잘못된 id"로 오해해 재시도한다.
+
+🔴 **배선 결함 (발견 19)**: `main.py` 가 `BrokerClient` 를 만들면 경계를 넘는 모듈이 하나 늘어난다(SECURITY-11). `BOUNDARY_CROSSERS` 가 늘면 "단일 통로"가 무의미해진다. 조치: `Gatekeeper.build()` 팩토리로 **생성도 통로 안에** 뒀다(함수 스코프 import — mock 모드에서 httpx/boto3 경로를 끌고 오지 않는 부수 효과도 있다). Day 1 의 테스트를 "최상위 import 만 검사"로 정밀화하고, "어떤 모듈도 최상위에서 broker 를 import 하지 않는다"를 추가했다.
+
+🔴 **레이어 결함 (발견 20)**: `mesh.api_models` 를 Day 1 에 U3 소유라는 이유로 L5 에 뒀는데 `inbox.py`(L5)가 쓸 수 없다. **레이어는 소유가 아니라 의존 순서다** → L1.
+**Context**: todo #8 완료
+
+---
+
+## Day 3 · PBT + 게이트 G3 (U2 Step 8 + U3 Step 6~7)
+**Timestamp**: 2026-08-19T15:34:00Z
+**AI Response**: PB-S1~S5 + PB-O1~O6 추가 (총 42개 속성 테스트).
+`tests/fakes.py` 신설 — LLM 응답만 대역, 조립·검증·감사·재수화는 실제 코드(목업 모드 원칙과 동일, FR-48). `name` 별 분기로 만든 이유: 한 질의가 classify → select_paths → extract → focus_topic 순으로 여러 번 부르는데 큐 방식이면 호출 순서가 바뀔 때마다 테스트가 깨진다.
+`tests/eval/test_scenarios.py` — 게이트 G3. 3막 + 후속을 HTTP 표면으로 종단 실행 + 전수 유출 검사.
+`tests/eval/test_demo_script.py` — `scripts/demo.py` 를 대역 주입으로 4막 실행. 픽스처 녹화는 Day 4 작업이라 `make demo` 는 아직 live 가 필요하고, 그렇다고 검증 없이 넘기면 시연 당일에 처음 돌려보게 된다.
+
+🔴 **테스트가 아무것도 검사하지 않던 두 곳 (발견 21)**:
+1. `TestClient` 기본값이 `raise_server_exceptions=True` 라서 전역 예외 핸들러의 500 응답을 볼 수 없었다 — "응답에 스택 트레이스가 없다"를 확인하려던 테스트가 예외를 그대로 받고 있었다. → 그 테스트만 `raise_server_exceptions=False`.
+2. "소스에 `StaticFiles` 가 없다" 문자열 검사가 **주석까지 잡았다**. → ast 로 호출을 검사.
+같은 문제를 Day 2 에도 겪었다(`store` 의 `classify` 검사). 문자열 검사는 주석과 무관한 이름까지 잡는다 — 구조를 검사할 때는 ast.
+
+🔴 **"유출"의 의미를 다시 나눴다 (§8.3)**: 시나리오 테스트가 `김철수` 로 실패했는데 `agent_label` 이 `"김철수 책임의 Agent"` 였다. 사용자가 **직접 지목한 사람**의 이름은 신뢰 구역에 머문다. 고객사명은 문서에서 온 것이므로 어디에도 없어야 한다. Day 2 의 `NEVER_ANYWHERE` vs `NEVER_IN_PAYLOAD` 구분을 여기서도 적용했다.
+**결과: 게이트 G3 통과** — 3막 종단 · 전수 유출 0건 · 인용 0개 차단 · 승인 없이 422 · 재전송 410 · 헤더 4개 · `/docs` 404 · 4번째 에이전트 코드 변경 0.
+**Context**: todo #9, #10 완료
+
+---
+
+## Day 3 · 실측 검증 (EXAONE 4회)
+**Timestamp**: 2026-08-19T15:38:00Z
+**AI Response**: Day 3 에 새로 만든 프롬프트 2개를 실측했다.
+`select_paths` 0.44s · **프롬프트 326자** · `REQ-4412`/`EAP-AKA`/`CTR-204817`/`12억`/`보안등급` 전부 부재 → BR-S-02("본문 미포함")가 실제로 동작한다. 본문을 넣으면 수천 자가 되고 그 본문이 등급 판정 **전에** 신뢰 구역 밖으로 나간다.
+`focus_topic` 0.23~0.26s · 세 세션 모두 닫힌 어휘 안 + 의미 정확:
+  "고객사 H 인증 요구사항 검토 + SDK v3.2 토큰 정책" → "인증 관련 작업 중"
+  "atlas-ml 전처리 v3 재학습" → "모델 학습 작업 중"
+  "SDK v3.2 배포 준비" → "배포·릴리스 작업 중"
+**Context**: LLM 예산 준수 (Day 3 총 EXAONE 5회 포함 preflight, Bedrock 0회 — 자격증명 만료)
+
+---
+
+## Day 3 · 종합 검증 + 문서 갱신
+**Timestamp**: 2026-08-19T15:48:00Z
+**AI Response**: `make test` 938개 · `make eval` 38개(G3) · `make eval-classify`(G2) · `make lint` · `make audit` 0건 전부 통과. `make preflight` 실패 1(AWS 자격증명 만료, Day 2 부터 동일).
+문서 갱신: `preflight-findings.md` §11~12(발견 17~21 + Day 3 종료 상태 + 남은 한계 4건) · `day3-implementation-report.md` 작성 · `aidlc-state.md`(G3 통과, SG13~16 신설, Day 3 완료 내역, 실측 사실 16~18) · u2 Step 5~9 및 u3 Step 1~7 체크박스 전부 완료.
+**Context**: todo #11 완료
+
+---

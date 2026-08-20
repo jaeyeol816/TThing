@@ -23,27 +23,213 @@ Day 1 상태: 세션 로드 · 신선도 · verified QA 병합 구현.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from datetime import datetime, timedelta
+import re
+import time
+from datetime import date, datetime, timedelta
+from fnmatch import fnmatch
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from mesh.config import Config, DataBundle, get_logger, log_extra, safe_resolve
-from mesh.exceptions import MeshError
+from mesh.config import (
+    Config,
+    DataBundle,
+    get_logger,
+    log_extra,
+    safe_resolve,
+    to_relative,
+)
+from mesh.exceptions import (
+    ExaoneUnavailable,
+    MeshError,
+    PathEscapeError,
+    ScopeViolationError,
+)
 from mesh.schemas import (
     AgentCard,
     Chunk,
     DatasetInfo,
     EditInfo,
+    Formality,
     Freshness,
     RunInfo,
     Session,
+    SourceKind,
     VerifiedQA,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from mesh.audit import AuditLog
+    from mesh.gatekeeper import Gatekeeper
+    from mesh.llm.exaone import ExaoneClient
 
 log = get_logger("store")
 
 #: 세션이 `EXPIRED` 로 넘어가는 기준. 이걸 넘으면 실시간 주장에서 제외한다.
 EXPIRED_AFTER = timedelta(hours=24)
+
+#: 파일 하나당 상한 (BR-S-10). 실험 로그가 수십 MB 가 될 수 있고, 전부 읽으면
+#: EXAONE 토큰 한도를 넘고 지연이 폭발한다.
+MAX_FILE_BYTES = 256 * 1024
+
+#: `run_log` 은 **마지막** N 줄을 읽는다. 로그는 뒤가 중요하다.
+RUN_LOG_TAIL_LINES = 200
+
+#: 주제 라벨 캐시 TTL. 세션이 갱신되면 키가 바뀌어 자동 무효화되므로
+#: 이 값은 "세션이 그대로일 때 얼마나 오래 재사용할지"만 정한다.
+FOCUS_CACHE_TTL_SECONDS = 300
+
+SELECT_PATHS_SYSTEM = (
+    "You choose which candidate file paths are relevant to a question.\n"
+    'Output exactly one JSON object: {"selected": [<index>, ...]}\n'
+    "\n"
+    "Hard rules:\n"
+    "  - Output indices only. Never output path strings.\n"
+    "  - Choose at most 3 indices. Prefer fewer.\n"
+    "  - If nothing is clearly relevant, output every index.\n"
+    "  - Never output prose or any other key.\n"
+    "  - You are given paths and titles only, never file contents. Do not ask for them."
+)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 파일 종류 판정 (BR-S-09)
+# ══════════════════════════════════════════════════════════════════════
+
+#: 경로 패턴 -> `(source_kind, formality)`. **순서가 중요하다** — 앞에서 매치되면
+#: 뒤를 보지 않는다.
+#:
+#: `notes/` 가 `informal` 인 것이 시나리오 3 의 핵심이다. 김책임 근거는 개인
+#: 메모(비공식)이고 최민수 근거는 설계 리뷰(공식)다. 화면에 이 차이를 표시하는
+#: 것이 "둘 다 사실일 수 있습니다"라는 서술을 뒷받침한다 (FR-33).
+SOURCE_PATTERNS: tuple[tuple[str, SourceKind, Formality], ...] = (
+    ("*/notes/*", "note", "informal"),
+    ("*/minutes/*", "minutes", "official"),
+    ("*/docs/*", "design_doc", "official"),
+    ("*/scripts/*", "script", "official"),
+    ("*/configs/*", "config", "official"),
+    ("*/runs/*", "run_log", "official"),
+    ("*/benchmark/*", "benchmark", "official"),
+    ("corpus/customer-*/*", "spec", "official"),
+)
+
+DEFAULT_SOURCE: tuple[SourceKind, Formality] = ("design_doc", "official")
+
+
+def source_kind_of(rel: str) -> tuple[SourceKind, Formality]:
+    """경로에서 **문서 종류**와 공식성을 유도한다. 보안 등급과 무관하다.
+
+    이름에 `classify` 를 쓰지 않는 것이 의도적이다. 이 저장소에서 "분류"는
+    등급 판정을 뜻하고 그건 `classifier.py` 의 일이다. 이름이 겹치면
+    "store 가 등급을 판정하지 않는다"는 규칙이 흐려진다.
+
+    본문을 읽지 않고 판정한다 — `select_paths()` 가 본문 없이 후보를 설명할 수
+    있어야 하고(BR-S-02), 파일이 없어도 종류는 알 수 있어야 한다.
+    """
+    posix = rel.replace("\\", "/")
+    for pattern, kind, formality in SOURCE_PATTERNS:
+        if fnmatch(posix, pattern) or fnmatch(posix, pattern.lstrip("*/")):
+            return kind, formality
+    if posix.endswith(".log"):
+        return "run_log", "official"
+    if posix.endswith((".py", ".sh")):
+        return "script", "official"
+    if posix.endswith((".yaml", ".yml", ".json", ".toml")):
+        return "config", "official"
+    return DEFAULT_SOURCE
+
+
+def chunk_id_for(rel: str) -> str:
+    """경로에서 유도하는 결정적 ID.
+
+    결정적이어야 하는 이유: `AgentCall.chunk_ids` 가 `prepare` 와 `send` 사이를
+    건너가고, 같은 파일이 매번 다른 ID 를 받으면 근거 대조가 깨진다.
+    """
+    return "ch_" + hashlib.sha1(rel.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 본문 읽기 (BR-S-10)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def read_body(path: Path, kind: SourceKind, *, max_bytes: int) -> tuple[str, bool]:
+    """파일 본문과 잘림 여부.
+
+    `run_log` 은 **마지막 200줄**, 그 외는 앞부분을 읽는다.
+    로그는 뒤가 중요하고 문서는 앞이 중요하다.
+    """
+    raw = path.read_bytes()
+    truncated = len(raw) > max_bytes
+
+    if kind == "run_log":
+        text = (
+            raw[-max_bytes:].decode("utf-8", errors="replace")
+            if truncated
+            else raw.decode("utf-8", errors="replace")
+        )
+        lines = text.splitlines()
+        if len(lines) > RUN_LOG_TAIL_LINES:
+            lines = lines[-RUN_LOG_TAIL_LINES:]
+            truncated = True
+        return "\n".join(lines), truncated
+
+    text = raw[:max_bytes].decode("utf-8", errors="replace")
+    return text, truncated
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 헤더 파싱
+# ══════════════════════════════════════════════════════════════════════
+
+#: 헤더를 찾는 범위. 본문 깊숙한 곳의 `title:` 이 제목을 바꾸지 않게 한다.
+HEADER_SCAN_LINES = 20
+
+#: 마크다운 프런트매터(`title: x`)와 주석 헤더(`# title: x`)를 함께 받는다.
+_HEADER_FIELD_RE = re.compile(
+    r"^[\s#/*\-]*(title|as_of|formality|owner)\s*[:：]\s*(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def parse_header(text: str) -> dict[str, str]:
+    """파일 앞부분의 메타데이터.
+
+    ⚠️ `보안등급` 은 **읽지 않는다.** 등급 판정은 `classifier.py` 의 일이고,
+       두 곳에서 해석하면 한쪽이 느슨해진다.
+    """
+    head = "\n".join(text.splitlines()[:HEADER_SCAN_LINES])
+    out: dict[str, str] = {}
+    for m in _HEADER_FIELD_RE.finditer(head):
+        key = m.group(1).lower()
+        value = m.group(2).strip().strip("\"'`,")
+        if key == "formality" and value not in {"official", "informal"}:
+            continue
+        out.setdefault(key, value)
+    return out
+
+
+def parse_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    m = _DATE_RE.search(value)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def file_date(path: Path) -> date | None:
+    """헤더에 날짜가 없으면 파일 `mtime` 을 쓴다 (BR-S-09)."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).date()
+    except OSError:  # pragma: no cover
+        return None
 
 
 class SessionNotFound(MeshError):
@@ -109,10 +295,25 @@ def activity_status(fresh: Freshness) -> str:
 class KnowledgeStore:
     """세션을 유지하고 지목된 경로의 파일만 읽는다."""
 
-    def __init__(self, cfg: Config, data: DataBundle) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        data: DataBundle,
+        *,
+        exaone: ExaoneClient | None = None,
+        gatekeeper: Gatekeeper | None = None,
+        audit: AuditLog | None = None,
+    ) -> None:
         self.cfg = cfg
         self.data = data
+        #: 경로 선택용. 없으면 후보 전체를 읽는다 (fail closed 방향).
+        self.exaone = exaone
+        #: 목록 요약용. 없으면 `current_focus_summary` 가 `None` 이다.
+        self.gatekeeper = gatekeeper
+        #: 질문 수 집계용. 없으면 0.
+        self.audit = audit
         self._cache: dict[str, tuple[float, Session]] = {}
+        self._focus_cache: dict[tuple[str, str], tuple[float, str | None]] = {}
 
     # ── 세션 로드 (Day 1) ────────────────────────────────────────────
 
@@ -236,12 +437,125 @@ class KnowledgeStore:
 
     def in_scope(self, rel: str, entity_id: str) -> bool:
         """`knowledge_scope` glob 매치. 에이전트 간 지식 격리 (BR-S-03)."""
-        from fnmatch import fnmatch
-
         scopes = self.data.agent(entity_id).knowledge_scope
         return any(fnmatch(rel, pattern) for pattern in scopes)
 
-    # ── 파일 읽기 (Day 3, B) ─────────────────────────────────────────
+    # ── 파일 읽기 ────────────────────────────────────────────────────
+
+    def candidate_paths(self, session: Session) -> tuple[str, ...]:
+        """세션이 좁혀 놓은 후보 경로 전체 (BR-S-01).
+
+        `open_paths` 외에 **최근 편집 파일과 실행 로그**도 후보다.
+        시나리오 2 의 `train.log` 는 `recent_runs[].log` 에만 있고
+        `open_paths` 에는 없다 — 여기서 빠뜨리면 "지금 학습 중" 답이 불가능해진다.
+
+        전역 스캔을 하지 않는다. 세션에 없는 것은 못 찾는다 — 한계이자
+        "지금 이 사람의 관심사"라는 강력한 사전 필터다.
+        """
+        seen: dict[str, None] = {}
+        for rel in session.open_paths:
+            seen.setdefault(rel, None)
+        for edit in session.recent_edits:
+            seen.setdefault(edit.path, None)
+        for run in session.recent_runs:
+            if run.log:
+                seen.setdefault(run.log, None)
+        return tuple(seen)
+
+    def read(self, paths: list[str], entity_id: str) -> list[Chunk]:
+        """선택된 파일만 읽는다 (FR-22, BR-S-03, BR-S-09, BR-S-10).
+
+        2중 검사:
+          1. `safe_resolve()` — MESH_DATA_ROOT 하위인가
+          2. `knowledge_scope` glob — 그 에이전트의 지식 범위인가
+
+        **왜 2중인가**: `open_paths` 는 세션 JSON 에서 오고 세션 JSON 은 사람이
+        편집한다. `../../../etc/passwd` 가 들어갈 수 있다. 그리고 scope 검사는
+        김책임 Agent 가 박선임 파일을 읽는 것을 막는다 — 에이전트 간 지식 격리다.
+
+        ⚠️ `Chunk.tier` 를 채우지 않는다. 등급 판정은 Gatekeeper 의 일이다.
+           여기서 판정하면 판정 로직이 두 곳에 생기고, 한쪽이 느슨해진다.
+
+        읽지 못한 파일은 **건너뛴다** (예외를 올리지 않는다). 세션 JSON 이
+        오래되어 파일이 지워졌을 수 있고, 그 하나 때문에 질의 전체가 죽으면
+        데모가 멈춘다. 대신 로그에 남긴다.
+
+        Raises:
+            ScopeViolationError: scope 밖 경로. **이건 올린다** — 지식 격리
+                위반은 설정 오류이거나 공격이므로 조용히 넘기지 않는다.
+        """
+        out: list[Chunk] = []
+        for rel in paths:
+            try:
+                resolved = self.resolve(rel)
+            except PathEscapeError as e:
+                log.warning("경로 탈출 거부", extra=log_extra(reason=str(e)))
+                continue
+
+            normalized = to_relative(resolved, self.cfg.data_root)
+            if not self.in_scope(normalized, entity_id):
+                raise ScopeViolationError(f"{entity_id} 의 knowledge_scope 밖 경로다: {normalized}")
+
+            if not resolved.is_file():
+                log.warning("파일이 없다 — 건너뛴다", extra=log_extra(path=normalized))
+                continue
+
+            chunk = self._read_one(resolved, normalized, entity_id)
+            if chunk is not None:
+                out.append(chunk)
+        return out
+
+    def _read_one(self, resolved: Path, rel: str, entity_id: str) -> Chunk | None:
+        kind, formality = source_kind_of(rel)
+        try:
+            text, truncated = read_body(resolved, kind, max_bytes=MAX_FILE_BYTES)
+        except OSError as e:
+            log.warning("파일 읽기 실패 — 건너뛴다", extra=log_extra(reason=type(e).__name__))
+            return None
+
+        meta = parse_header(text)
+        as_of = meta.get("as_of")
+        return Chunk(
+            chunk_id=chunk_id_for(rel),
+            entity_id=entity_id,
+            text=text,
+            tier=None,  # ⚠️ Gatekeeper 의 일이다
+            display_title=meta.get("title") or resolved.stem,
+            internal_path=rel,
+            as_of=parse_date(as_of) or file_date(resolved),
+            formality=meta.get("formality") or formality,
+            source_kind=kind,
+            truncated=truncated,
+        )
+
+    def verified_chunks(self, session: Session, *, limit: int = 3) -> list[Chunk]:
+        """승인된 QA 를 `Chunk` 로 바꾼다 (BR-S-05).
+
+        ⚠️ **`tier` 를 보존한다.** 승인은 *답변의 정확성*을 검증한 것이고
+           *등급*을 낮춘 것이 아니다. 이 청크도 다른 지식과 똑같이
+           게이트키퍼를 통과한다.
+
+        여기서만 `Chunk.tier` 가 채워진다 — 이미 판정된 등급을 옮겨오는 것이므로
+        새로 판정하는 것이 아니다. Gatekeeper 는 `max()` 로 합치므로
+        재판정 결과가 더 높으면 그쪽이 이긴다.
+        """
+        recent = sorted(session.verified_qa, key=lambda q: q.verified_at, reverse=True)
+        return [
+            Chunk(
+                chunk_id=f"ch_qa_{qa.qa_id}",
+                entity_id=session.entity_id,
+                text=qa.answer,
+                tier=qa.tier,  # ⚠️ 보존
+                display_title=f"승인된 답변 ({qa.verified_at:%Y-%m-%d})",
+                internal_path=f"verified/{session.entity_id.replace(':', '_')}.json",
+                as_of=qa.verified_at.date(),
+                formality="official",
+                source_kind="note",
+            )
+            for qa in recent[:limit]
+        ]
+
+    # ── 경로 선택 ────────────────────────────────────────────────────
 
     async def select_paths(self, session: Session, question: str) -> list[str]:
         """`open_paths` 중 질문과 관련된 것을 고른다 (FR-17, BR-S-02).
@@ -256,27 +570,62 @@ class KnowledgeStore:
         출력은 **인덱스 배열**이다 — 경로 문자열을 생성하게 하면
         존재하지 않는 경로를 만들어낼 수 있다.
 
-        실패·파싱 오류 시 `open_paths` 전체를 반환한다
-        (더 많이 읽고 게이트키퍼가 막게 한다).
-
-        Day 3 (B)
+        실패·파싱 오류 시 후보 **전체**를 반환한다 — fail closed 방향이다.
+        더 많이 읽고 게이트키퍼가 막게 하는 것이, 덜 읽고 답을 못 하는 것보다 낫다.
         """
-        raise NotImplementedError("Day 3 (B) — EXAONE 경로 선택")
+        candidates = self.candidate_paths(session)
+        if len(candidates) <= 1:
+            return list(candidates)
 
-    def read(self, paths: list[str], entity_id: str) -> list[Chunk]:
-        """선택된 파일만 읽는다 (FR-22, BR-S-03, BR-S-09, BR-S-10).
+        if self.exaone is None:
+            return list(candidates)
 
-        2중 검사:
-          1. `safe_resolve()` — MESH_DATA_ROOT 하위인가
-          2. `knowledge_scope` glob — 그 에이전트의 지식 범위인가
+        lines = []
+        for i, rel in enumerate(candidates):
+            # ⚠️ display_title 은 파일을 열지 않고 경로에서 유도한다.
+            #    제목을 얻으려고 본문을 읽으면 "본문 미포함" 규칙이 무의미해진다.
+            lines.append(f"  {i}. {rel}  (kind: {source_kind_of(rel)[0]})")
 
-        `run_log` 은 마지막 200줄, 그 외는 앞부분. 256KB 상한.
+        user = (
+            f"QUESTION:\n{question[:1000]}\n\n"
+            f"CANDIDATES:\n" + "\n".join(lines) + "\n\n"
+            f"SESSION FOCUS: {session.focus}\n"
+            f"SESSION SUMMARY: {session.summary}"
+        )
 
-        ⚠️ `Chunk.tier` 를 채우지 않는다. 등급 판정은 Gatekeeper 의 일이다.
+        try:
+            raw = await self.exaone.complete_json(
+                SELECT_PATHS_SYSTEM, user, name="select_paths", max_tokens=96
+            )
+        except ExaoneUnavailable as e:
+            log.warning(
+                "경로 선택 실패 — 후보 전체를 읽는다 (게이트키퍼가 막는다)",
+                extra=log_extra(reason=str(e), candidates=len(candidates)),
+            )
+            return list(candidates)
 
-        Day 3 (B)
-        """
-        raise NotImplementedError("Day 3 (B) — 파일 읽기 + 프런트매터 파싱")
+        picked = raw.get("selected")
+        if not isinstance(picked, list):
+            log.warning("경로 선택 응답 형식 오류 — 후보 전체를 읽는다")
+            return list(candidates)
+
+        # 인덱스만 받는다. 경로 문자열을 생성하게 하면 존재하지 않는 경로를
+        # 만들어낼 수 있고, 그 문자열이 `read()` 의 경로 검사로 들어간다.
+        chosen: list[str] = []
+        for value in picked:
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if 0 <= value < len(candidates):
+                rel = candidates[value]
+                if rel not in chosen:
+                    chosen.append(rel)
+
+        if not chosen:
+            log.info("선택된 경로가 없다 — 후보 전체를 읽는다")
+            return list(candidates)
+        return chosen
+
+    # ── 지목 목록 ────────────────────────────────────────────────────
 
     async def list_agents(self) -> list[AgentCard]:
         """지목 목록 (FR-30, FR-31, BR-S-06).
@@ -287,7 +636,91 @@ class KnowledgeStore:
            게이트키퍼를 우회한 유출이다.
 
         변환 실패 시 `None` 을 담는다 — 원문 폴백은 없다 (fail closed).
-
-        Day 3 (B)
+        `disclose` 가 꺼진 필드도 `None` 이고, UI 는 "비공개"라고 쓰지 않고
+        아예 렌더하지 않는다 — "비공개"라는 표시 자체가 정보이기 때문이다.
         """
-        raise NotImplementedError("Day 3 (B) — 목록 구성 + 요약 캐시")
+        now = self.cfg.now()
+        cards: list[AgentCard] = []
+
+        for entity_id, agent in self.data.agents.items():
+            disclose = agent.disclose
+            try:
+                session = self.load_session(entity_id)
+            except SessionNotFound:
+                # 세션이 없어도 목록에는 남는다 — 담당 영역은 항상 공개이므로
+                # 지목이 가능해야 한다. 상태 관련 필드만 비운다.
+                cards.append(
+                    AgentCard(
+                        entity_id=entity_id,
+                        display_name=agent.display_name,
+                        expertise=agent.expertise,
+                        daily_limit_reached=self._limit_reached(entity_id, agent.daily_limit),
+                    )
+                )
+                continue
+
+            fresh = self.freshness_of(session)
+            summary = None
+            if disclose.current_focus:
+                summary = await self._focus_summary(session)
+
+            cards.append(
+                AgentCard(
+                    entity_id=entity_id,
+                    display_name=agent.display_name,
+                    expertise=agent.expertise,  # 항상 공개 (Literal[True])
+                    activity_status=(activity_status(fresh) if disclose.activity_status else None),
+                    away_minutes=(
+                        elapsed_minutes(session, now)
+                        if disclose.activity_status and fresh is not Freshness.LIVE
+                        else None
+                    ),
+                    question_count_today=(
+                        self._question_count(entity_id) if disclose.question_count_today else None
+                    ),
+                    current_focus_summary=summary,
+                    session_as_of=session.updated_at if disclose.current_focus else None,
+                    freshness=fresh if disclose.activity_status else None,
+                    daily_limit_reached=self._limit_reached(entity_id, agent.daily_limit),
+                )
+            )
+        return cards
+
+    async def _focus_summary(self, session: Session) -> str | None:
+        """게이트키퍼를 경유한 주제 라벨. 캐시 키는 `(entity_id, updated_at)`.
+
+        목록 조회마다 EXAONE 을 부르면 비싸고, 세션이 바뀌지 않았으면 요약도
+        바뀌지 않는다. `updated_at` 을 키에 넣으므로 세션이 갱신되면 자동 무효화된다.
+        """
+        if self.gatekeeper is None:
+            return None
+
+        key = (session.entity_id, session.updated_at.isoformat())
+        hit = self._focus_cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < FOCUS_CACHE_TTL_SECONDS:
+            return hit[1]
+
+        label = await self.gatekeeper.summarize_focus(session.focus, session.summary)
+        self._focus_cache[key] = (time.monotonic(), label)
+        return label
+
+    async def warm_focus_cache(self) -> None:
+        """앱 시작 시 워밍업. 첫 화면에서 사용자가 기다리지 않게 한다."""
+        for entity_id in self.data.agents:
+            try:
+                await self._focus_summary(self.load_session(entity_id))
+            except SessionNotFound:
+                continue
+
+    def _question_count(self, entity_id: str) -> int:
+        """오늘 이 사람에게 온 질문 수. `audit` + `local_queries` 합산.
+
+        신뢰 구역 안에서 처리된 질의도 "물어본 것"이므로 함께 센다 —
+        감사 로그 탭에는 안 보이지만 카운트에서 빠지면 숫자가 거짓이 된다.
+        """
+        if self.audit is None:
+            return 0
+        return self.audit.count_today(entity_id, now=self.cfg.now())
+
+    def _limit_reached(self, entity_id: str, daily_limit: int) -> bool:
+        return self._question_count(entity_id) >= daily_limit
