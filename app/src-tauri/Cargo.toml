@@ -1,0 +1,25 @@
+[package]
+name = "delegate-agent-mesh"
+version = "0.1.0"
+description = "대리 에이전트 메시 — 사람을 깨우지 않고 답을 얻는다"
+edition = "2021"
+rust-version = "1.77"
+
+# ⚠️ 의존성을 최소로 유지한다.
+#    이 셸이 하는 일은 세 가지뿐이다: 백엔드 기동 · 준비 대기 · 창 띄우기.
+#    보안 로직은 전부 Python 쪽에 있고 여기서 복제하지 않는다 (SECURITY-11).
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[[bin]]
+name = "delegate-agent-mesh"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

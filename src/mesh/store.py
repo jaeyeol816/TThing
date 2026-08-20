@@ -149,6 +149,16 @@ def chunk_id_for(rel: str) -> str:
     return "ch_" + hashlib.sha1(rel.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
+def _write_json(path: Path, raw: object) -> None:
+    """시드 JSON 과 같은 모양으로 되쓴다.
+
+    끝에 줄바꿈을 붙이는 이유: 이 함수가 되쓰는 파일 중 일부는 저장소에
+    커밋된 시드 파일이다. 줄바꿈이 빠지면 데모를 한 번 돌릴 때마다
+    `git diff` 에 `\\ No newline at end of file` 잡음이 남는다.
+    """
+    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 본문 읽기 (BR-S-10)
 # ══════════════════════════════════════════════════════════════════════
@@ -421,7 +431,7 @@ class KnowledgeStore:
             else {"entity_id": entity_id, "items": []}
         )
         raw["items"].append(qa.model_dump(mode="json"))
-        path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json(path, raw)
         self._cache.pop(entity_id, None)  # 다음 로드에서 병합되게
         log.info(
             "승인된 QA 저장",
@@ -624,6 +634,144 @@ class KnowledgeStore:
             log.info("선택된 경로가 없다 — 후보 전체를 읽는다")
             return list(candidates)
         return chosen
+
+    # ── 업로드 (Day 4) ───────────────────────────────────────────────
+
+    def uploads_dir(self, entity_id: str) -> Path:
+        """`corpus/{사람}/uploads/`.
+
+        이 경로가 `knowledge_scope` 안에 들어오는 것이 중요하다 —
+        `corpus/kim/**` 이 `corpus/kim/uploads/**` 를 덮는다. 밖에 두면
+        업로드한 문서를 자기 Agent 도 읽지 못한다.
+        """
+        return (
+            self.cfg.corpus_root / entity_id.replace(":", "_").removeprefix("person_") / "uploads"
+        )
+
+    def save_upload(self, entity_id: str, filename: str, content: str) -> tuple[str, Path]:
+        """업로드 저장. `(상대 경로, 절대 경로)` 를 반환한다.
+
+        ⚠️ **파일명을 다시 검증한다.** `api_models.UploadRequest` 가 이미
+           검증했지만 그건 "사용자에게 빨리 알려주기 위한 것"이고 신뢰의
+           근거가 아니다. 이 메서드는 HTTP 를 거치지 않는 경로(스크립트·테스트)
+           에서도 호출된다.
+
+        3중 검사:
+          1. `Path(filename).name` — 경로 성분을 강제로 벗긴다
+          2. `safe_resolve()` — MESH_DATA_ROOT 하위인지
+          3. `in_scope()` — 그 사람의 지식 범위인지
+
+        같은 이름이 있으면 **덮어쓰지 않고** 접미사를 붙인다. 업로드는
+        되돌릴 수 없는 작업이고, 조용히 덮어쓰면 원본이 사라진다.
+
+        Raises:
+            PathEscapeError: 파일명이 경로를 벗어난다
+            ScopeViolationError: 저장 위치가 그 사람의 범위 밖이다
+        """
+        base = Path(filename).name  # ① 경로 성분 제거
+        if not base or base.startswith(".") or base != filename:
+            raise PathEscapeError(f"안전하지 않은 파일명이다: {filename!r}")
+
+        target_dir = self.uploads_dir(entity_id)
+        rel_dir = to_relative(target_dir, self.cfg.data_root)
+        rel = f"{rel_dir}/{base}"
+
+        resolved = self.resolve(rel)  # ② root 하위 확인
+        if not self.in_scope(rel, entity_id):  # ③ scope 확인
+            raise ScopeViolationError(
+                f"{entity_id} 의 knowledge_scope 밖에 저장하려 한다: {rel}. "
+                f"agents.yaml 의 knowledge_scope 에 corpus/<사람>/** 가 있는지 확인하라"
+            )
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        stem, suffix = (base.rsplit(".", 1) + [""])[:2]
+        suffix = f".{suffix}" if suffix else ""
+        candidate = resolved
+        index = 1
+        while candidate.exists():
+            candidate = target_dir / f"{stem}-{index}{suffix}"
+            index += 1
+        candidate.write_text(content, encoding="utf-8")
+
+        final_rel = to_relative(candidate, self.cfg.data_root)
+        log.info(
+            "문서 업로드 저장",
+            extra=log_extra(
+                entity_id=entity_id, path=final_rel, size_bytes=len(content.encode("utf-8"))
+            ),
+        )
+        return final_rel, candidate
+
+    def list_uploads(self, entity_id: str) -> tuple[str, ...]:
+        """업로드 디렉터리의 파일 목록.
+
+        ⚠️ 여기서만 디렉터리를 훑는다. `iterdir()` 이고 재귀가 아니다 —
+           BR-S-01 이 금지한 것은 **질의 때 전역 스캔으로 지식을 찾는 것**이고,
+           소유자가 자기 업로드 목록을 보는 것은 다른 일이다.
+        """
+        target = self.uploads_dir(entity_id)
+        if not target.is_dir():
+            return ()
+        return tuple(
+            sorted(
+                to_relative(p, self.cfg.data_root)
+                for p in target.iterdir()
+                if p.is_file() and not p.name.startswith(".")
+            )
+        )
+
+    def delete_upload(self, entity_id: str, rel: str) -> bool:
+        """업로드 삭제. **`uploads/` 아래만** 지울 수 있다.
+
+        샘플 코퍼스를 지우면 데모가 깨지므로 업로드 디렉터리로 제한한다.
+        세션의 `open_paths` 에서도 함께 뺀다 — 지워진 파일이 후보에 남으면
+        매 질의마다 "파일이 없다" 경고가 뜬다.
+        """
+        allowed_prefix = to_relative(self.uploads_dir(entity_id), self.cfg.data_root) + "/"
+        if not rel.startswith(allowed_prefix):
+            raise ScopeViolationError(
+                f"업로드한 문서만 삭제할 수 있다: {rel} (허용: {allowed_prefix}*)"
+            )
+        resolved = self.resolve(rel)
+        if not resolved.is_file():
+            return False
+        resolved.unlink()
+        self.detach_path(entity_id, rel)
+        log.info("문서 삭제", extra=log_extra(entity_id=entity_id, path=rel))
+        return True
+
+    # ── 세션 후보 편집 ───────────────────────────────────────────────
+
+    def attach_path(self, entity_id: str, rel: str) -> None:
+        """세션 `open_paths` 에 추가한다 — 그러면 질의 후보가 된다.
+
+        세션 JSON 을 직접 고치는 이유: 이 프로젝트에는 데몬이 없고(BR-S-08),
+        세션 파일이 "지금 이 사람의 관심사"의 단일 출처다. 업로드가 후보에
+        반영되지 않으면 올린 문서가 아무 질문에도 쓰이지 않는다.
+        """
+        self._rewrite_open_paths(entity_id, add=rel)
+
+    def detach_path(self, entity_id: str, rel: str) -> None:
+        self._rewrite_open_paths(entity_id, remove=rel)
+
+    def _rewrite_open_paths(
+        self, entity_id: str, *, add: str | None = None, remove: str | None = None
+    ) -> None:
+        path = self.session_path(entity_id)
+        if not path.exists():
+            raise SessionNotFound(f"세션 파일이 없다: {path.name}")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        paths: list[str] = list(raw.get("open_paths") or ())
+        if remove and remove in paths:
+            paths.remove(remove)
+        if add and add not in paths:
+            paths.append(add)
+        raw["open_paths"] = paths
+        # ⚠️ `updated_at` 을 손대지 않는다. 신선도는 **사람의 작업 상태**를
+        #    나타내는 값이고, 파일을 올린 것만으로 "지금 활동 중"이 되면
+        #    STALE 보정(BR-S-04)이 의미를 잃는다.
+        _write_json(path, raw)
+        self._cache.pop(entity_id, None)
 
     # ── 지목 목록 ────────────────────────────────────────────────────
 

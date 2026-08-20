@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "창 하나만 띄운다. 어떤 플러그인 권한도 열지 않는다.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

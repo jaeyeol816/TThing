@@ -28,6 +28,10 @@ data/verified/*.json
 !data/verified/.gitkeep
 data/sessions/local-*.json
 
+# 사용자가 올린 문서. **사용자 데이터이며 소스가 아니다.**
+# 커밋하면 남의 기밀 문서가 저장소 역사에 영구히 남는다 — 되돌릴 수 없다.
+data/corpus/*/uploads/
+
 # CDK
 infra/.venv/
 infra/cdk.out/

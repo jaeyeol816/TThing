@@ -3,7 +3,11 @@
 > 지식을 가진 사람 앞에 대리 에이전트를 세우고, 질문을 사람이 아니라 에이전트에게 보낸다.
 > 기밀 자료는 신뢰 구역 안에서만 읽히고, 외부 AI에는 **데이터가 아니라 문제의 구조만** 나간다.
 
-해커톤 MVP. 설계 문서는 `requirements/`, 구현 설계는 `aidlc-docs/`.
+원래 설계 문서는 `requirements/`, 구현 설계는 `aidlc-docs/`.
+
+---
+
+해커톤 MVP. **[설계 자료](docs/설계자료.md)** · **[사용 설명서](docs/사용설명서.md)**
 
 ---
 
@@ -14,8 +18,14 @@ make setup                  # uv sync + .env 생성 + 디렉터리
 # .env 에 FRIENDLI_TOKEN 기입
 make preflight              # 환경 검증 — 사람이 읽을 진단을 출력한다
 make test                   # 단위 + 속성 테스트
-make run                    # http://127.0.0.1:8080
+
+make app                    # 데스크톱 앱 (백엔드를 스스로 띄운다)
+#  또는
+make run                    # 브라우저 — http://127.0.0.1:8080
 ```
+
+`make app` 은 `npm install` → Rust 빌드 → 백엔드 기동 → 창 생성을 한 번에 한다.
+Node 와 Rust 가 필요하다. 브라우저로만 쓸 거면 `make run` 이면 된다.
 
 ### 네트워크 없이 (오프라인 데모)
 
@@ -31,9 +41,12 @@ EXAONE_MODE=mock AGENT_TRANSPORT=mock make run
 | | |
 |---|---|
 | `uv` | Python 3.12 고정 + 패키지 관리 |
-| Node (`npx`) | CDK 배포할 때만 |
 | git | |
+| Node 18+ | 데스크톱 앱 (`make app`) · CDK 배포 |
+| Rust | 데스크톱 앱 (`make app`) |
 | ~~`aws` CLI~~ | **필요 없다** (boto3로 대체) |
+
+브라우저로만 쓸 거면 **uv 와 git 만 있으면 된다.**
 
 ---
 
@@ -55,22 +68,29 @@ src/mesh/            애플리케이션
   orchestrator.py    전달 · 신뢰도 분기 · 병기
   inbox.py           에스컬레이션 3버튼
   main.py            FastAPI
+  documents.py       문서 업로드 + 즉시 등급 판정
   llm/               exaone.py (신뢰 구역) · broker.py (경계 밖)
-  web/               탭 3개 (빌드 없음)
+  web/               탭 4개 (빌드 없음)
+
+app/                 Tauri 데스크톱 셸 (Rust) — 백엔드 URL 을 여는 창
 
 data/                MESH_DATA_ROOT
   vocab.json         어휘 사전  ⚠️ Day 1 동결. 나갈 수 있는 값의 전체 집합
   labels.json        등급 정답 라벨 → 분류 정확도 측정
-  banned.json        금칙어
-  questions.json     데모 질문 + 기대 결과
+  banned.json        금칙어  (걸리면 SECRET 상향 + 차단)
+  pseudonyms.json    치환 대상  (걸리면 기호로 바꿔 통과)
+  questions.json     데모 질문 프리셋
   corpus/            샘플 문서 (전부 우리가 만든 것)
+    */uploads/       사용자가 올린 문서 — .gitignore
   sessions/          사람별 작업 상태
   verified/          승인된 Q&A (런타임 생성)
-  fixtures/          목업 응답
+  fixtures/          목업 응답 (재녹화는 빠진 것만 채운다)
 
 config/agents.yaml   에이전트 정의 — 추가는 항목 하나 더하는 것으로 끝난다
 infra/               AWS CDK (브로커 Lambda + 감사 미러)
+scripts/             preflight · demo · dump_payloads · e2e · lint_web
 tests/               unit / property / eval
+docs/                설계 자료 + 사용 설명서
 aidlc-docs/          설계 문서 (마크다운만. 코드 없음)
 ```
 
@@ -140,6 +160,7 @@ for slot in schema.slots:          # 스키마를 순회한다
 | 해커톤 종료 후 | **Friendli API 키를 폐기·재발급할 것** |
 | `MESH_BIND_HOST` | `127.0.0.1` 고정. 재수화된 실제 이름이 지나가는 표면이다 |
 | 사용자 인증 | **없다.** 드롭다운 전환은 데모용 |
+| `data/corpus/*/uploads/` | 사용자가 올린 문서. **커밋하지 않는다** — 커밋하면 남의 기밀이 저장소 역사에 영구히 남는다 |
 | 실배포 전제 | **원본 시스템의 접근 권한 승계가 최우선 요건.** 없으면 권한 우회 도구가 된다 |
 
 검증: `git ls-files | grep -E '\.env|opencode'` 결과가 비어 있어야 한다.
@@ -154,13 +175,20 @@ for slot in schema.slots:          # 스키마를 순회한다
 | G1 | Day 1 종료 | `schemas.py` + `vocab.json` 동결 |
 | **G2** | **Day 2 종료** | **기밀 재현율 100%**, 정확도 ≥90% — 미달 시 Day 3 진입 금지 |
 | G3 | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 |
-| **G4** | Day 5 | **유출 0건** (자동 5-gram 전수 + 육안) |
+| **G4** | Day 5 | **유출 0건** (자동 5-gram 전수 + **육안 전수**) |
 | G5 | Day 5 | 목업 모드로 3막 전체 통과 |
 
 ```bash
-make eval-classify    # G2
-make eval             # G4
+make eval-classify        # G2
+make eval                 # G3
+make eval-dump-payloads   # G4 — 경계를 넘은 것 전부를 마크다운으로 덤프
+make e2e                  # 라이브 종단 실측 (업로드 → 타인 질문)
 ```
+
+**G4 는 자동 검사로 끝나지 않는다.** 자동 검사는 아는 것만 잡는다 — 목록에 없는
+고객사명, 의미만 옮긴 서술, 슬롯 이름 자체가 정보인 경우는 사람이 읽어야 보인다.
+실제로 육안 확인이 자동 검사가 놓친 결함 2건을 찾았다
+(→ [Day 4~5 보고서 §6](aidlc-docs/construction/day4-5-implementation-report.md)).
 
 ---
 
@@ -182,6 +210,10 @@ make eval             # G4
 
 | 문서 | 내용 |
 |---|---|
+| **[`docs/설계자료.md`](docs/설계자료.md)** | **어떻게 만들었나 — Mermaid 다이어그램 15개** |
+| **[`docs/사용설명서.md`](docs/사용설명서.md)** | **어떻게 쓰나 — 설치부터 데모까지** |
+| `aidlc-docs/construction/day4-5-implementation-report.md` | 업로드·화면·셸·G4. **찾아 고친 결함 목록** |
+| `aidlc-docs/construction/g4-payload-dump.md` | 경계를 넘은 것 전부 (자동 생성) |
 | `aidlc-docs/construction/preflight-findings.md` | **실측값. 가장 먼저 읽을 것** |
 | `aidlc-docs/construction/shared-infrastructure.md` | 부트스트랩 · 파일 소유권 · import 경계 |
 | `aidlc-docs/construction/plans/u*-code-generation-plan.md` | 유닛별 실행 계획 (체크박스) |

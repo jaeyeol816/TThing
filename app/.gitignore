@@ -1,0 +1,10 @@
+# 빌드 산출물 · 내려받은 의존성만 무시한다.
+node_modules/
+src-tauri/target/
+
+# `tauri` CLI 가 매번 다시 만드는 ACL 스키마. 커밋하면 CLI 버전마다 diff 가 난다.
+src-tauri/gen/
+
+# ⚠️ `package-lock.json` 과 `Cargo.lock` 은 **커밋한다.**
+#    "다른 컴퓨터에서도 똑같이 돈다"가 이 프로젝트의 요구사항이고,
+#    잠금 파일 없이는 빌드가 재현되지 않는다.

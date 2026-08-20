@@ -295,3 +295,70 @@ async def test_fixture_key_changes_with_prompt(cfg, monkeypatch):
     monkeypatch.delenv("MESH_RECORD_FIXTURES")
     with pytest.raises(FixtureMissing):
         await ExaoneClient(Config.load()).complete_json("sys-B", "user", name="classify")
+
+
+async def test_recording_does_not_overwrite_an_existing_fixture(cfg, monkeypatch, mock_env):
+    """**재녹화가 기존 픽스처를 덮어쓰지 않는다.**
+
+    실측으로 겪은 것: 같은 프롬프트에 모델이 다른 답을 줘서
+    `classify_f0c464f5d54d.json` 의 `tier` 가 `secret` → `internal` 로 바뀌었고,
+    그 값은 **G2(기밀 재현율 100%)를 통과시킨 값**이었다.
+
+    키는 입력에서 유도되므로 바뀌지 않는다. 그래서 `git diff` 에 한 줄로만 나타나고
+    놓치기 쉽다. 픽스처의 목적은 "그때 모델이 이렇게 답했다"를 고정하는 것이므로,
+    재녹화는 **빠진 것만 채워야** 한다.
+    """
+    monkeypatch.setenv("MESH_RECORD_FIXTURES", "1")
+
+    def answering(value: str):
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": f'{{"tier": "{value}"}}'}}]},
+            )
+
+        return handler
+
+    async with _client(Config.load(), answering("secret")) as c:
+        first = await c.complete_json("sys", "user", name="classify")
+    assert first == {"tier": "secret"}
+
+    # 같은 프롬프트, 다른 모델 응답 — 키는 같다
+    async with _client(Config.load(), answering("internal")) as c:
+        second = await c.complete_json("sys", "user", name="classify")
+    assert second == {"tier": "internal"}, "live 응답은 그 실행의 것을 그대로 쓴다"
+
+    files = list((mock_env / "fixtures" / "exaone").glob("classify_*.json"))
+    assert len(files) == 1, "키가 같으므로 파일은 하나다"
+    assert json.loads(files[0].read_text(encoding="utf-8")) == {"tier": "secret"}, (
+        "첫 녹화가 유지되어야 한다 — 재녹화가 게이트를 조용히 뒤집으면 안 된다"
+    )
+
+    monkeypatch.setenv("EXAONE_MODE", "mock")
+    monkeypatch.delenv("MESH_RECORD_FIXTURES")
+    replayed = await ExaoneClient(Config.load()).complete_json("sys", "user", name="classify")
+    assert replayed == {"tier": "secret"}
+
+
+async def test_overwrite_is_possible_but_explicit(cfg, monkeypatch, mock_env):
+    """갱신 자체를 막지는 않는다. 명시적으로 요구하게 한다."""
+    monkeypatch.setenv("MESH_RECORD_FIXTURES", "1")
+
+    def answering(value: str):
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": f'{{"tier": "{value}"}}'}}]},
+            )
+
+        return handler
+
+    async with _client(Config.load(), answering("secret")) as c:
+        await c.complete_json("sys", "user", name="classify")
+
+    monkeypatch.setenv("MESH_FIXTURE_OVERWRITE", "1")
+    async with _client(Config.load(), answering("internal")) as c:
+        await c.complete_json("sys", "user", name="classify")
+
+    files = list((mock_env / "fixtures" / "exaone").glob("classify_*.json"))
+    assert json.loads(files[0].read_text(encoding="utf-8")) == {"tier": "internal"}

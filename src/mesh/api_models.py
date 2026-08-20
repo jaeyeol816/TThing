@@ -356,3 +356,175 @@ class ErrorResponse(BaseModel):
     error: str
     correlation_id: str
     detail: str | None = None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 문서 업로드 (Day 4 신설)
+# ══════════════════════════════════════════════════════════════════════
+#
+# 사용자가 자기 컴퓨터의 문서를 올리는 순간부터 이 도구가 시작된다.
+# 그래서 **업로드 응답이 곧 첫 데모 장면**이다:
+#
+#     "방금 올린 문서는 기밀로 판정됐습니다 — 본문의 금액 표기 때문입니다"
+#
+# 판정 근거를 즉시 보여주는 것이 중요하다. 나중에 답변이 무뎌졌을 때
+# "왜?"를 되짚을 수 있어야 하고, 등급 판정이 블랙박스가 아니라는 것을
+# 이 화면 하나로 보인다.
+
+#: 업로드 크기 상한. 텍스트 문서만 받으므로 넉넉하다.
+#: 이 값을 넘기면 413 이 아니라 422 다 — pydantic 이 막는다.
+MAX_UPLOAD_CHARS = 200_000
+
+#: 파일명 상한. 파일시스템 한계보다 짧게 잡는다.
+MAX_FILENAME_CHARS = 120
+
+#: 받는 확장자. **허용 목록**이다 (차단 목록이 아니다).
+#:
+#: 실행 파일·아카이브를 받지 않는 이유: 이 도구는 파일을 **읽어서 모델에
+#: 넘기는** 것이 전부다. 압축을 풀거나 실행할 이유가 없고, 그런 경로를
+#: 만들면 그것 자체가 공격면이 된다.
+ALLOWED_UPLOAD_SUFFIXES: tuple[str, ...] = (
+    ".md",
+    ".txt",
+    ".py",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".log",
+    ".csv",
+    ".sql",
+    ".sh",
+    ".toml",
+    ".ini",
+    ".cfg",
+)
+
+
+class UploadRequest(BaseModel):
+    """문서 업로드.
+
+    파일을 **텍스트로** 받는다 (multipart 가 아니다). 근거:
+      - 대상이 설계 문서·스크립트·설정·로그다. 전부 텍스트다
+      - multipart 파서는 파일명·인코딩·경계 처리에서 사고가 잦다
+      - 브라우저가 `FileReader` 로 읽어 보내면 클라이언트가 무엇을 보내는지
+        사용자에게 보여줄 수 있다 (이 프로젝트의 원칙과 맞는다)
+
+    바이너리를 받지 않는 것은 기능 제약이 아니라 **범위를 좁힌 결정**이다.
+    """
+
+    owner: str = Field(pattern=ENTITY_ID_PATTERN)
+    filename: str = Field(min_length=1, max_length=MAX_FILENAME_CHARS)
+    content: str = Field(min_length=1, max_length=MAX_UPLOAD_CHARS)
+    #: 세션의 `open_paths` 에 추가할지. 끄면 저장만 하고 질의 후보가 되지 않는다.
+    attach_to_session: bool = True
+
+    @field_validator("filename")
+    @classmethod
+    def _safe_filename(cls, v: str) -> str:
+        """경로 구분자·상위 참조·숨김 파일·확장자를 여기서 막는다.
+
+        ⚠️ 서버가 다시 검증한다 (`store.save_upload`). 이 검증은 사용자에게
+           **왜 거부됐는지 빨리 알려주기 위한 것**이고, 신뢰의 근거가 아니다.
+        """
+        import re as _re
+
+        name = v.strip()
+        if not name:
+            raise ValueError("파일명이 비어 있다")
+        if "/" in name or "\\" in name or "\x00" in name:
+            raise ValueError("파일명에 경로 구분자를 쓸 수 없다")
+        if name.startswith("."):
+            raise ValueError("숨김 파일은 올릴 수 없다")
+        if ".." in name:
+            raise ValueError("파일명에 '..' 를 쓸 수 없다")
+        if not _re.fullmatch(r"[\w.\-() \[\]가-힣]+", name):
+            raise ValueError("파일명에 쓸 수 없는 문자가 있다")
+        suffix = name[name.rfind(".") :].lower() if "." in name else ""
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            raise ValueError(
+                f"받지 않는 확장자다: {suffix or '(없음)'}. "
+                f"허용: {', '.join(ALLOWED_UPLOAD_SUFFIXES)}"
+            )
+        return name
+
+
+class TierEvidence(BaseModel):
+    """등급 판정 근거 한 줄. 사람이 읽는다."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rule: int
+    reason: str
+
+
+class DocumentView(BaseModel):
+    """저장된 문서 하나.
+
+    ⚠️ `internal_path` 가 **있다.** 다른 응답과 다른 점이다.
+
+       근거: 이 화면은 **소유자가 자기 문서를 관리하는 화면**이다. 자기가
+       방금 올린 파일의 경로를 자기가 보는 것은 권한 우회가 아니다.
+       FR-43 이 막는 것은 *다른 사람의* 지식을 인용할 때 경로가 새는 것이다.
+
+       그래서 이 필드는 `GET /api/documents?owner=` 에만 나오고
+       답변·인용·감사 응답에는 나오지 않는다.
+    """
+
+    document_id: str
+    owner: str = Field(pattern=ENTITY_ID_PATTERN)
+    filename: str
+    internal_path: str
+    size_bytes: int
+    uploaded_at: datetime
+    tier: Tier
+    tier_evidence: tuple[TierEvidence, ...] = ()
+    attached: bool = False
+    #: 업로드가 아니라 저장소에 원래 있던 샘플 문서인가
+    seeded: bool = False
+
+
+class UploadResult(BaseModel):
+    """업로드 응답. **판정 결과를 즉시 준다.**
+
+    `tier` 가 `secret` 이면 화면이 그 사실과 근거를 크게 보여준다 —
+    "이 문서를 쓰는 질문은 원문이 나가지 않습니다"를 미리 알리는 것이
+    나중에 답변이 무뎌졌을 때의 설명 비용을 줄인다.
+    """
+
+    document: DocumentView
+    #: 이 문서가 다른 사람의 질의에 동원될 수 있는가 (scope 안인가)
+    in_scope: bool = True
+    warnings: tuple[str, ...] = ()
+
+
+class DocumentList(BaseModel):
+    owner: str = Field(pattern=ENTITY_ID_PATTERN)
+    documents: tuple[DocumentView, ...] = ()
+
+    @property
+    def secret_count(self) -> int:
+        return sum(1 for d in self.documents if d.tier is Tier.SECRET)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 사용자 · 질문 프리셋 (프런트가 하드코딩하지 않게)
+# ══════════════════════════════════════════════════════════════════════
+
+
+class UserView(BaseModel):
+    """전환 가능한 사용자.
+
+    ⚠️ **인증이 아니다.** 데모용 관점 전환이며 화면에 그 사실을 표시한다
+       (BR-U-15). 실배포에서는 원본 시스템의 권한을 승계해야 한다.
+    """
+
+    entity_id: str = Field(pattern=ENTITY_ID_PATTERN)
+    display_name: str
+    expertise: str
+
+
+class PresetQuestion(BaseModel):
+    label: str
+    question: str
+    targets: tuple[str, ...] = ()
+    note: str | None = None

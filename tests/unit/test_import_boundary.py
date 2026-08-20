@@ -255,7 +255,7 @@ def test_only_designated_modules_handle_mapping(parsed):
 #:   L3  변환      판정 · 추출 · 가명화
 #:   L4  경계      gatekeeper · audit  <- 여기만 경계를 넘는다
 #:   L5  도메인    store · agent · inbox · api_models
-#:   L6  조율      orchestrator
+#:   L6  조율      orchestrator · documents
 #:   L7  전달      main (FastAPI)
 LAYERS: dict[str, int] = {
     "mesh": 0,
@@ -281,6 +281,8 @@ LAYERS: dict[str, int] = {
     "mesh.agent": 5,
     "mesh.inbox": 5,
     "mesh.orchestrator": 6,
+    # 업로드 서비스. store(L5) + gatekeeper(L4) 를 조율하므로 orchestrator 와 같은 층이다.
+    "mesh.documents": 6,
     "mesh.main": 7,
 }
 

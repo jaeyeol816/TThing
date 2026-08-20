@@ -35,6 +35,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import ValidationError
 
@@ -46,12 +47,17 @@ from mesh.api_models import (
     AskResult,
     AuditRowView,
     AuditSearchResult,
+    DocumentList,
     ErrorResponse,
     HealthStatus,
     InboxItem,
     PrepareResult,
+    PresetQuestion,
     ResolveRequest,
     SendRequest,
+    UploadRequest,
+    UploadResult,
+    UserView,
 )
 from mesh.audit import AuditLog
 from mesh.config import (
@@ -63,6 +69,7 @@ from mesh.config import (
     setup_logging,
     sha256_file,
 )
+from mesh.documents import DocumentService
 from mesh.exceptions import GatekeeperError, MeshError
 from mesh.gatekeeper import Gatekeeper
 from mesh.inbox import Inbox
@@ -136,6 +143,7 @@ class Services:
         )
         self.agent = AgentClient(cfg, self.gatekeeper, audit=self.audit)
         self.inbox = Inbox(cfg, self.audit)
+        self.documents = DocumentService(cfg, self.data, self.store, self.gatekeeper)
         self.orchestrator = Orchestrator(
             cfg,
             self.data,
@@ -290,7 +298,28 @@ def _install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ValidationError)
     async def _validation(request: Request, exc: ValidationError) -> JSONResponse:
-        return _error(422, "validation_error", "요청 형식이 올바르지 않습니다")
+        return _error(422, "validation_error", _field_summary(exc.errors()))
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """⚠️ FastAPI 기본 422 응답을 **반드시** 교체한다.
+
+        기본 핸들러는 오류마다 `input` 을 담는다 — 즉 **요청 본문을 그대로
+        되돌려준다.** 업로드 요청에서 이 일이 벌어지면 방금 올린 기밀 문서
+        전문(최대 200,000자)이 오류 응답에 실린다.
+
+        실측: `content` 가 상한을 1자 넘겼을 때 기본 응답이 문서 전문을
+        되비췄다. 유출은 아니다(요청자 자신에게 돌아간다). 그러나
+
+          - 오류 응답이 원문을 담는 습관이 생기면 로그·프록시·브라우저
+            히스토리에 원문이 퍼진다
+          - 응답 크기가 요청 크기에 비례해 커진다
+          - 이 프로젝트의 오류 계약(`error` + `correlation_id`)이 깨져
+            화면이 오류를 표시하지 못한다
+
+        그래서 **필드 이름과 사유만** 남기고 값은 버린다.
+        """
+        return _error(422, "validation_error", _field_summary(exc.errors()))
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
@@ -301,6 +330,29 @@ def _install_error_handlers(app: FastAPI) -> None:
         """
         log.exception("처리되지 않은 오류")
         return _error(500, "internal_error", None)
+
+
+#: 오류 요약에 담을 필드 개수 상한. 전부 담으면 스키마 구조를 알려준다.
+MAX_ERROR_FIELDS = 3
+
+
+def _field_summary(errors: list[dict[str, object]]) -> str:
+    """검증 오류를 **필드 이름 + 사유**로만 요약한다. 값은 담지 않는다.
+
+    사용자에게 무엇을 고쳐야 하는지는 알려주되(`filename: ...`), 그가 보낸
+    값을 되비추지 않는다. 파일명은 짧아서 담아도 될 것 같지만, 규칙을
+    필드별로 나누면 "어떤 필드는 되비춰도 된다"는 판단이 코드에 흩어진다.
+    """
+    parts: list[str] = []
+    for err in errors[:MAX_ERROR_FIELDS]:
+        loc = err.get("loc") or ()
+        # `("body", "filename")` -> `filename`. `body` 는 사용자에게 무의미하다.
+        names = [str(x) for x in loc if isinstance(loc, tuple) and str(x) != "body"]
+        field = ".".join(names) or "요청"
+        parts.append(f"{field}: {err.get('msg', '값이 올바르지 않습니다')}")
+    if len(errors) > MAX_ERROR_FIELDS:
+        parts.append(f"(그 밖에 {len(errors) - MAX_ERROR_FIELDS}건)")
+    return "요청 형식이 올바르지 않습니다 — " + "; ".join(parts)
 
 
 def _error(status: int, code: str, detail: str | None) -> JSONResponse:
@@ -388,6 +440,61 @@ def _install_routes(app: FastAPI) -> None:
         if qa is not None:
             svc.store.append_verified(item.owner_entity_id, qa)
         return item
+
+    # ── 문서 업로드 (Day 4) ──────────────────────────────────────────
+
+    @app.post("/api/documents", response_model=UploadResult)
+    async def upload_document(request: Request, body: UploadRequest) -> UploadResult:
+        """문서를 올리고 **즉시 등급을 판정해** 근거와 함께 돌려준다.
+
+        파일은 `MESH_DATA_ROOT` 아래에만 저장되고 경계를 넘지 않는다.
+        판정에는 규칙(순수 함수)과 신뢰 구역 모델만 쓴다.
+        """
+        return await _services(request).documents.upload(body)
+
+    @app.get("/api/documents", response_model=DocumentList)
+    async def list_documents(
+        request: Request, owner: str = Query(min_length=1, max_length=64)
+    ) -> DocumentList:
+        return await _services(request).documents.list_for(owner)
+
+    @app.delete("/api/documents/{document_id}")
+    async def delete_document(
+        request: Request,
+        document_id: str,
+        owner: str = Query(min_length=1, max_length=64),
+    ) -> dict[str, bool]:
+        """**업로드한 문서만** 삭제한다. 샘플 코퍼스는 지울 수 없다."""
+        deleted = _services(request).documents.delete(owner, document_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="업로드한 문서가 아닙니다")
+        return {"deleted": True}
+
+    # ── 사용자 · 질문 프리셋 ─────────────────────────────────────────
+
+    @app.get("/api/users", response_model=list[UserView])
+    async def users(request: Request) -> list[UserView]:
+        """전환 가능한 사용자.
+
+        ⚠️ **인증이 아니다.** 데모용 관점 전환이며 화면이 그 사실을 표시한다.
+           프런트가 사람 목록을 하드코딩하지 않게 하려고 서버가 준다 —
+           `agents.yaml` 에 한 명 추가하면 화면에도 나타난다 (FR-23).
+        """
+        return [
+            UserView(entity_id=a.entity_id, display_name=a.display_name, expertise=a.expertise)
+            for a in _services(request).data.agents.values()
+        ]
+
+    @app.get("/api/questions", response_model=list[PresetQuestion])
+    async def questions(request: Request) -> list[PresetQuestion]:
+        """데모 질문 프리셋. 없으면 빈 목록 (화면이 입력창만 쓴다)."""
+        path = _services(request).cfg.questions_path
+        if not path.is_file():
+            return []
+        import json
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return [PresetQuestion.model_validate(item) for item in raw.get("presets") or []]
 
     # ── 감사 로그 (BR-A-04, FR-42) ───────────────────────────────────
 

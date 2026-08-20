@@ -43,6 +43,7 @@ import re
 from collections.abc import Iterable, Iterator, Sequence
 
 from mesh.schemas import (
+    EXCLUDED_CATEGORIES_BY_REPRESENTATION,
     EXCLUDED_CATEGORIES_DEFAULT,
     STRUCTURAL_KEYS,
     BannedTerms,
@@ -624,16 +625,32 @@ def verbatim_sentence_count(
     return count
 
 
-def excluded_categories(payload: object, banned: BannedTerms) -> tuple[str, ...]:
+def excluded_categories(
+    payload: object,
+    banned: BannedTerms,
+    representation: Representation = Representation.STRUCTURED,
+) -> tuple[str, ...]:
     """`PreviewCard` 의 "포함되지 않은 것" 목록 (BR-U-02).
 
     있는 것을 보여주는 것보다 없는 것을 보여주는 게 설득력이 있다.
     실제로 없음을 확인한 항목만 반환한다 — 확인하지 않은 것을 "없다"고 쓰면
     미리보기가 거짓이 된다.
+
+    ⚠️ **표현에 따라 다른 목록을 준다** (G4 육안 확인이 찾은 결함).
+
+    가명화(사내) 페이로드는 원문 문장을 유지한다 — 식별자만 바꾼다. 그런데
+    구조 페이로드와 같은 목록을 보여주면 화면이 "제품명·버전·일정·원문 문장
+    없음"이라고 표시하고, 정작 페이로드에는 `SDK v3.2` 와 `2025-12-03` 과
+    문서 전문이 들어 있다.
+
+    유출보다 이게 나쁜 이유: 사용자는 이 목록을 읽고 [전송] 을 누른다.
+    목록이 거짓이면 "사람이 미리보기를 확인한다"는 방어 겹 자체가 무의미해진다.
     """
     if banned.hits(payload_text(payload)):
         return ()
-    return EXCLUDED_CATEGORIES_DEFAULT
+    return EXCLUDED_CATEGORIES_BY_REPRESENTATION.get(
+        representation.value, EXCLUDED_CATEGORIES_DEFAULT
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════

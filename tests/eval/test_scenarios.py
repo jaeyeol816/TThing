@@ -41,7 +41,7 @@ NEVER_IN_PAYLOAD = (*NEVER_ANYWHERE, "김철수", "박선영", "최민수")
 
 Q1 = "고객사 요구사항과 우리 SDK 토큰 갱신 방식이 충돌하나요?"
 Q2 = "라벨 불균형을 어떤 기법으로 처리했나요?"
-Q3 = "왜 세션 바인딩을 넣지 않았나요? 이유가 궁금합니다"
+Q3 = "왜 세션 바인딩을 넣지 않았나요? 그 결정 배경을 알고 싶습니다"
 Q3_FOLLOWUP = "그때 p99 지연이 얼마였나요?"
 
 
@@ -385,3 +385,134 @@ def test_full_sweep_finds_no_leak(client, wiring):
     assert report.payloads_scanned >= 2
     assert report.documents_scanned >= 11
     assert report.clean, (report.hits[:3], report.banned_hits[:3])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 시나리오 4 — 내가 방금 만든 기밀 문서에 남이 질문한다 (Day 4)
+# ══════════════════════════════════════════════════════════════════════
+#
+# 시나리오 1~3 은 저장소에 심어둔 샘플 코퍼스를 쓴다. 그건 우리가 만든
+# 문서이므로 "잘 되게 맞춰 놨을 수도" 있다.
+#
+# 여기서는 **테스트가 문서를 새로 만들어 업로드한다.** 코퍼스에 없던
+# 표현·금액·날짜가 들어간 문서다. 그리고 **다른 사람**이 그 문서에 대해
+# 질문한다. 이것이 이 도구의 실사용 형태이고, 데모의 1막이다.
+#
+# 새 입구는 새 위험이다. Day 4 에 업로드 경로가 생겼으므로,
+# 그 경로로 들어온 원문도 같은 보장을 받는지 종단으로 확인한다.
+
+UPLOAD_OWNER = "person:kim"
+UPLOAD_ASKER = "person:park"
+
+#: 코퍼스에 **없는** 표현을 쓴다. 샘플에 맞춘 통과를 배제한다.
+FRESH_SECRET = """# title: 방금 만든 재계약 메모
+# as_of: 2026-08-19
+
+고객사 H 는 요구사항 REQ-9931 에서 15분 주기 재인증을 강제한다.
+재계약 총액은 37억 원 규모이고 납기는 2027-03-15 이다.
+위약금 조항이 붙어 있어 일정 협상 여지가 없다.
+우리 SDK 는 무상태 토큰 갱신을 쓰므로 이 제약과 정면으로 충돌한다.
+"""
+
+#: 이 문서에만 있는 문자열. 경계를 넘는 어디에도 없어야 한다.
+FRESH_SECRETS_ONLY = ("REQ-9931", "37억", "2027-03-15", "위약금", "15분 주기")
+
+
+def _upload(client, content=FRESH_SECRET, filename="fresh-recontract.md"):
+    r = client.post(
+        "/api/documents",
+        json={
+            "owner": UPLOAD_OWNER,
+            "filename": filename,
+            "content": content,
+            "attach_to_session": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_scenario_4_upload_then_someone_else_asks(client, wiring):
+    """**업로드 → 다른 사람의 질문 → 원문 0개.** 이 도구의 실사용 형태다."""
+    uploaded = _upload(client)
+    doc = uploaded["document"]
+
+    # ① 올리는 즉시 기밀로 판정되고 **근거가 함께** 온다
+    assert doc["tier"] == "secret"
+    assert doc["tier_evidence"], "근거 없는 판정은 블랙박스다"
+    assert uploaded["in_scope"] is True
+    assert doc["attached"] is True
+    assert any("기밀" in w for w in uploaded["warnings"])
+
+    # ② 업로드만으로는 아무것도 경계를 넘지 않는다
+    assert wiring.audit.count() == 0
+
+    # ③ 다른 사람이 그 문서에 대해 묻는다
+    prepared = _prepare(client, Q1, [UPLOAD_OWNER])
+    call = prepared["calls"][0]
+    assert call["tier"] == "secret"
+    assert call["preview"]["verbatim_sentence_count"] == 0
+
+    # ④ 방금 만든 문서의 표현이 경계를 넘는 페이로드에 없다
+    payload = call["preview"]["payload_pretty"]
+    for leak in (*FRESH_SECRETS_ONLY, *NEVER_IN_PAYLOAD):
+        assert leak not in payload, f"업로드한 원문이 경계를 넘었다: {leak}"
+
+    result = _send(client, prepared)
+
+    # ⑤ 감사 로그(페이로드 사본)에도 없다
+    for leak in FRESH_SECRETS_ONLY:
+        assert wiring.audit.search(leak) == (), f"감사 로그에 {leak} 이 남았다"
+
+    # ⑥ 그래도 쓸 만한 답이 나온다 — 막기만 하는 도구가 아니다
+    answer = result["merged"]["answers"][0]
+    assert answer["text"].strip()
+    assert answer["used_external_agent"] is True
+
+    # ⑦ 문서를 올린 사람은 방해받지 않았다
+    assert client.get("/api/inbox", params={"owner": UPLOAD_OWNER}).json() == []
+
+
+def test_scenario_4_upload_does_not_revive_session_freshness(client, wiring):
+    """파일을 올린 것은 "그 사람이 지금 그 일을 하고 있다"가 아니다 (BR-S-04).
+
+    되살리면 오래된 세션이 업로드 한 번으로 LIVE 가 되고, STALE 신뢰도
+    보정이 통째로 무력화된다 — 자신 없어야 할 답이 자신 있게 나온다.
+    """
+    before = wiring.store.load_session(UPLOAD_OWNER).updated_at
+    _upload(client, filename="freshness-probe.md")
+    assert wiring.store.load_session(UPLOAD_OWNER).updated_at == before
+
+
+def test_scenario_4_uploaded_document_can_be_withdrawn(client, wiring):
+    """올린 사람이 되돌릴 수 있어야 한다 — 지우면 질의 후보에서도 빠진다."""
+    doc = _upload(client, filename="withdraw-me.md")["document"]
+    resolved = wiring.store.resolve(doc["internal_path"])
+    assert resolved.is_file()
+
+    r = client.delete(f"/api/documents/{doc['document_id']}", params={"owner": UPLOAD_OWNER})
+    assert r.status_code == 200
+    assert not resolved.exists()
+    assert doc["internal_path"] not in wiring.store.load_session(UPLOAD_OWNER).open_paths
+
+
+def test_scenario_4_others_cannot_see_the_uploaded_document(client):
+    """지식 격리 (BR-S-03). 질문자는 문서 목록을 볼 수 없다."""
+    _upload(client, filename="kim-private.md")
+    others = client.get("/api/documents", params={"owner": UPLOAD_ASKER}).json()
+    assert "kim-private.md" not in {d["filename"] for d in others["documents"]}
+
+
+def test_scenario_4_upload_cannot_declare_itself_public(client):
+    """헤더 한 줄로 등급을 낮출 수 없다.
+
+    낮출 수 있다면 기밀 문서 맨 위에 `보안 등급: 공개` 를 적는 것만으로
+    게이트키퍼를 통째로 우회한다. 하향 권한은 작성자가 아니라 배치 경로에 있다.
+    """
+    doc = _upload(
+        client,
+        content="# title: 공개 주장\n# 보안 등급: 공개\n\n" + FRESH_SECRET,
+        filename="claims-public.md",
+    )["document"]
+    # 금칙어가 헤더 주장보다 앞선다 (classifier 규칙 ②③ > ④)
+    assert doc["tier"] == "secret"

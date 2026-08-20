@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from mesh import validator
-from mesh.schemas import Representation, Tier
+from mesh.schemas import EXCLUDED_CATEGORIES_DEFAULT, Representation, Tier
 
 # ══════════════════════════════════════════════════════════════════════
 # 순수성 — U5 Lambda 번들 조건 (BR-V-07)
@@ -533,6 +533,65 @@ def test_excluded_categories_is_empty_when_banned_hit(banned):
     """확인하지 않은 것을 "없다"고 쓰면 미리보기가 거짓이 된다."""
     assert validator.excluded_categories({"x": "H社"}, banned) == ()
     assert validator.excluded_categories({"x": "clean"}, banned)
+
+
+def test_pseudonymized_preview_does_not_claim_verbatim_is_absent(banned):
+    """**G4 육안 확인이 찾은 결함의 회귀 방지.**
+
+    가명화(사내) 페이로드는 원문 문장을 유지한다 — 식별자만 바꾼다. 그런데
+    구조 페이로드와 같은 목록을 보여줘서, 화면이 "원문 문장·제품명·버전·일정
+    없음"이라고 표시하면서 정작 페이로드에는 `SDK v3.2` 와 `2025-12-03` 과
+    문서 전문이 들어 있었다.
+
+    유출보다 이게 나쁘다: 사용자는 이 목록을 읽고 [전송] 을 누른다.
+    목록이 거짓이면 "사람이 확인한다"는 방어 겹 자체가 무의미해진다.
+    """
+    payload = {"excerpts": {"COMP_A": "title: SDK v3.2 인증 설계 리뷰\nas_of: 2025-12-03\n"}}
+    categories = validator.excluded_categories(payload, banned, Representation.PSEUDONYMIZED)
+    for lie in ("원문 문장", "제품명", "버전", "일정"):
+        assert lie not in categories, f"가명화 페이로드에 {lie} 이 남는데 없다고 표시한다"
+    # 약속할 수 있는 것은 남는다 — 금칙어 검사와 치환이 보장한다
+    assert "고객사명" in categories
+    assert "담당자" in categories
+
+
+def test_structured_preview_keeps_the_full_promise(banned):
+    """구조 페이로드는 코드가 닫힌 어휘에서 조립한다 — 8개 전부 참이다."""
+    categories = validator.excluded_categories(
+        {"task": "constraint_conflict_check"}, banned, Representation.STRUCTURED
+    )
+    assert set(categories) == set(EXCLUDED_CATEGORIES_DEFAULT)
+
+
+def test_verbatim_preview_promises_nothing(banned):
+    """공개 등급은 원문 전송이 등급의 정의다. 없음을 약속할 것이 없다."""
+    assert (
+        validator.excluded_categories({"text": "공개 문서 전문"}, banned, Representation.VERBATIM)
+        == ()
+    )
+
+
+def test_every_representation_has_an_entry():
+    """표현이 추가되면 목록도 추가해야 한다 — 빠지면 조용히 기본값을 쓴다."""
+    from mesh.schemas import EXCLUDED_CATEGORIES_BY_REPRESENTATION
+
+    for representation in Representation:
+        assert representation.value in EXCLUDED_CATEGORIES_BY_REPRESENTATION
+
+
+def test_pseudonymized_promises_are_a_subset_of_structured():
+    """가명화가 구조보다 많은 것을 약속할 수는 없다.
+
+    구조 추출은 코드가 조립하고 가명화는 원문을 유지한다. 가명화 쪽에만
+    있는 약속이 생기면 어느 한쪽이 틀린 것이다.
+    """
+    from mesh.schemas import EXCLUDED_CATEGORIES_BY_REPRESENTATION as BY_REP
+
+    structured = set(BY_REP["structured"])
+    pseudonymized = set(BY_REP["pseudonymized"])
+    extra = pseudonymized - structured
+    # `사내 경로` 는 가명화에만 있는 정당한 약속이다 (PATH 치환이 보장한다).
+    assert extra <= {"사내 경로"}, f"근거 없는 약속: {extra}"
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -1,0 +1,24 @@
+{
+  "answer": {
+    "summary": "COMP_A의 세션 바인딩 필수 요구사항이 CONST_A, CONST_B의 무바인딩 정책과 충돌하며, 갱신 전략도 상이합니다.",
+    "situation": [
+      "COMP_A는 session_binding을 required로 설정",
+      "COMP_A는 renewal_mode를 none으로 설정",
+      "CONST_A와 CONST_B는 모두 session_binding을 none으로 요구",
+      "CONST_A와 CONST_B는 모두 renewal_mode를 background_silent로 요구"
+    ],
+    "draft_answer": "COMP_A의 설계 근거와 제약 조건 간 불일치 원인을 확인이 필요합니다. 세션 바인딩 필수 정책이 도입된 시점, 고객사 협의 기록, 그리고 갱신 전략 변경 이력을 검토하여 현재 설계가 의도된 것인지 또는 조정이 필요한지 판단해야 합니다.",
+    "already_answered": []
+  },
+  "confidence": 0.0,
+  "citations": [],
+  "usage": {
+    "inputTokens": 1117,
+    "outputTokens": 342,
+    "totalTokens": 1459,
+    "cacheReadInputTokens": 0,
+    "cacheWriteInputTokens": 0
+  },
+  "revalidated": true,
+  "vocab_sha256": null
+}

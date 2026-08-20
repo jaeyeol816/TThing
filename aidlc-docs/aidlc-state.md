@@ -4,9 +4,9 @@
 - **Project Name**: 대리 에이전트 메시 (Delegate Agent Mesh)
 - **Project Type**: Greenfield
 - **Start Date**: 2026-08-19T00:00:00Z
-- **Last Updated**: 2026-08-20T11:55:00Z
-- **Current Stage**: CONSTRUCTION - Code Generation Part 2 (U1·U2·U3 완료)
-- **Next Stage**: Day 4 — U4 화면 + 목업 픽스처 녹화 (소유 C)
+- **Last Updated**: 2026-08-20T15:10:00Z
+- **Current Stage**: CONSTRUCTION - Code Generation Part 2 (U1·U2·U3·U4 완료)
+- **Next Stage**: Build and Test — U5 배포는 선택 (AGENT_TRANSPORT=direct 로 동작)
 
 ## Workspace State
 - **Existing Code**: No
@@ -52,9 +52,9 @@
 | **U1** gatekeeper-core | [x] | [x] | [x] | SKIP | [x] | **[x]** |
 | **U2** knowledge-edge | [x] | SKIP | SKIP | SKIP | [x] | **[x]** |
 | **U3** agent-mesh | [x] | [x] | SKIP | SKIP | [x] | **[x]** |
-| **U4** console-web | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
+| **U4** console-web | [x] | SKIP | SKIP | SKIP | [x] | **[x]** |
 | **U5** cloud-broker | SKIP | [x] | [x] | [x] | [x] | [ ] |
-| **U6** demo-corpus-eval | [x] | SKIP | SKIP | SKIP | [x] | [ ] |
+| **U6** demo-corpus-eval | [x] | SKIP | SKIP | SKIP | [x] | **[x]** |
 
 - [ ] Build and Test — 전 유닛 Code Gen P2 완료 후
 
@@ -82,10 +82,10 @@
 | **SG1** | Day 1 첫 커밋 전 | `.gitignore`가 자격증명 3종 커버 🔴 | **[x]** 커밋 c91c1b8 검증 |
 | **G1** | Day 1 종료 | `schemas.py` + `vocab.json` 동결 | **[x]** 계약 6종 동결 |
 | **G2** | Day 2 종료 | **기밀 재현율 100%**, 정확도 ≥90% 🔴 | **[x] 통과** `make eval-classify` 11/11=100% · 기밀 3/3 · 함정 1/1 · 하향 0건 |
-| **G3** | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 | **[x] 통과** `make eval` 38개 · 3막 종단 · 전수 유출 0건 |
+| **G3** | Day 3 종료 | 시나리오 1 종단 통과, 인용 0개 차단 | **[x] 통과** `make eval` 44개 · 3막 + 업로드 종단 · 전수 유출 0건 |
 | **SG2~4** | U5 배포 전 | 브로커 인증·최소권한·감사 무결성 | [ ] |
-| **G4** | Day 5 | **유출 0건** (자동 + 육안 전수) 🔴 | **[~]** 자동 전수 0건 (live 페이로드 11건 × 문서 11건). 육안 확인은 Day 5 |
-| **G5** | Day 5 | 목업 모드로 3막 전체 통과 | **[x] 통과** 네트워크 0회로 4막 + 유출 검사 exit=0 |
+| **G4** | Day 5 | **유출 0건** (자동 + 육안 전수) 🔴 | **[x] 자동 통과 · 육안 수행** 페이로드 10건 × 문서 11건 → 원문 0 · 금칙어 0. **육안 확인이 자동 검사가 놓친 결함 2건을 찾아 수정했다** (아래 §Day 4~5). 덤프: `construction/g4-payload-dump.md`. 체크박스 서명은 확인자 몫 |
+| **G5** | Day 5 | 목업 모드로 3막 전체 통과 | **[x] 통과** 네트워크 0회로 4막 + 유출 검사 exit=0 · `make eval-dump-payloads` 도 오프라인 재생 |
 | **SG5** | Day 5 | 로그·감사에 원문·토큰·`reasoning*` 부재 | **[x]** 감사 로그가 금지 필드를 **거부**한다 (`reject_forbidden`) |
 
 **추가 게이트 (Day 1 에 신설)**
@@ -103,6 +103,10 @@
 | SG14 | `agent.py` 에 경계 클라이언트 부재 (ast) | **[x]** Day 3 신설 |
 | SG15 | 최상위 `mesh.llm.broker` import 0건 (전 모듈) | **[x]** Day 3 신설 |
 | SG16 | `inbox` UPDATE 가 감사 흔적을 건드리지 않음 | **[x]** Day 3 신설 |
+| SG17 | 웹 UI 정적 검사 — XSS·인라인·외부 CDN·경로 노출·페이로드 절단 | **[x]** Day 4 신설 (`scripts/lint_web.py`) |
+| SG18 | 검사기 자체를 검사 — 심은 위반 12종을 잡는지 | **[x]** Day 4 신설 (`test_lint_web.py`) |
+| SG19 | 오류 응답이 요청 본문을 되비추지 않음 | **[x]** Day 4 신설 (FastAPI 기본 422 교체) |
+| SG20 | 재녹화가 기존 픽스처를 덮어쓰지 않음 | **[x]** Day 4 신설 (게이트가 조용히 뒤집히는 것을 막는다) |
 
 **G2를 통과하지 못하면 Day 3으로 넘어가지 않는다** (설계 §7.2).
 
@@ -266,9 +270,48 @@ AWS 자격증명 갱신 후 **EXAONE + Bedrock 을 모두 실제로 쓰는 첫 �
 
 목업 픽스처 24개 녹화 완료 → **네트워크 0회로 4막 전체 통과 (게이트 G5)**.
 
-**Day 4 에 남은 것** (소유 C)
-- `src/mesh/web/` 3개 파일 (CSP 에 `unsafe-inline` 이 없으므로 별도 파일)
-- 게이트 G4 육안 전수 확인 (`make eval-dump-payloads`)
+### Day 4~5 (2026-08-20) — 업로드 입구 · 화면 · 데스크톱 셸 · 게이트 G4
+
+전체 보고서: `construction/day4-5-implementation-report.md`
+설계 자료: `docs/설계자료.md` (Mermaid 15개) · 사용 설명서: `docs/사용설명서.md`
+
+**테스트 1,101개 통과** (Day 3 대비 +125). lint · audit · G2 · G3 · G4 자동 · G5 전부 통과.
+
+#### G4 육안 전수가 찾은 결함 2건 — **자동 검사는 통과했다**
+
+| # | 결함 | 왜 자동 검사가 놓쳤나 | 고친 방법 |
+|---|---|---|---|
+| 27 | `person:park` 같은 **entity_id** 가 사내 등급 발췌에 실려 나갔다 | 치환 목록에 사람 이름(`박선영`)만 있었다. `person:park` 는 목록에 없으므로 "식별자가 아니었다" — **목록에 없는 것은 검사되지 않는다** | `agents.yaml` 에서 entity_id·display_name 을 **유도해** 치환 대상에 자동 추가. 두 파일을 고치게 만들면 하나를 잊고 유출된다 (FR-23 과 같은 근거) |
+| 28 | 사내 등급 미리보기가 "원문 문장·제품명·버전·일정 없음"이라고 **거짓 표시** | 유출이 아니라 **거짓 보증**이다. 검사할 규칙이 없었다. `excluded_categories` 가 자기 docstring 을 어기고 있었다 | `EXCLUDED_CATEGORIES_BY_REPRESENTATION` 신설. 가명화는 원문 문장을 유지하는 것이 정의이므로 그것을 약속하지 않는다 |
+
+28번이 유출보다 나쁜 이유: 사용자는 그 목록을 읽고 [전송] 을 누른다.
+목록이 거짓이면 **"사람이 미리보기를 확인한다"는 방어 겹 자체가 무의미해진다.**
+
+#### 그 밖에 찾아 고친 결함 6건
+
+| # | 결함 | 영향 |
+|---|---|---|
+| 29 | FastAPI 기본 422 가 **요청 본문을 되비췄다** | 업로드가 상한을 넘기면 기밀 문서 전문(최대 200,000자)이 오류 응답에 실렸다 |
+| 30 | 재녹화가 기존 픽스처를 **덮어썼다** | `classify` 픽스처의 `tier` 가 `secret`→`internal` 로 바뀌었다. **G2 를 통과시킨 값이다.** 키는 입력에서 유도되므로 `git diff` 에 한 줄로만 나타난다 |
+| 31 | NUL 바이트가 `PathEscapeError` 대신 `ValueError` | 업로드 경로에서 500 이 되고 감사 로그에 남지 않는다. 속성 테스트(PB-S1)가 찾았다 |
+| 32 | `Makefile run:` 이 존재하지 않는 `mesh.main:app` 을 가리켰다 | `make run` 이 깨져 있었다 → `--factory mesh.main:create_app` |
+| 33 | 시드 JSON 이 데모마다 줄바꿈을 잃었다 | 매 실행 `git diff` 잡음 → 실제 변경과 구별 불가 |
+| 34 | 테스트 픽스처가 `data/corpus/*/uploads/` 를 복사했다 | "어제 시연에서 올린 파일" 때문에 오늘 테스트가 깨졌다 (실제로 깨졌다) |
+
+#### 결정
+
+| 결정 | 기각한 대안 | 근거 |
+|---|---|---|
+| Tauri 가 **백엔드 URL 을 직접 연다** | 정적 파일 번들 | 번들하면 origin 이 `tauri://localhost` 가 되어 `fetch("/api/...")` 가 도달하지 못한다. 절대 URL 로 바꾸면 `connect-src` 개방 + 호스트 하드코딩 + "외부 URL 0건" 규칙 붕괴. URL 을 열면 같은 origin → FastAPI CSP 가 그대로 적용된다 |
+| Rust `setup()` 에서 창 생성 | `tauri.conf.json` 의 `windows` | 백엔드 준비 전에 빈 창을 띄우지 않는다. 120초 초과면 창을 만들지 않고 실패를 알린다 |
+| 업로드를 **텍스트 JSON** 으로 | multipart | 대상이 전부 텍스트. multipart 파서는 파일명·인코딩 사고가 잦다. 클라이언트가 무엇을 보내는지 보여줄 수 있다 |
+| `.sh`·`.sql`·`.py` **허용** | 실행 위험으로 차단 | 기준은 "실행 위험"이 아니라 "텍스트로 읽히는가". 배포 스크립트는 실제로 팀이 서로 묻는 지식이고, 이 시스템은 파일을 실행하지 않는다 |
+| `mesh.documents` 를 **L6** | L5 | `store`(L5) 를 import 한다. 같은 층이면 레이어 규칙 위반 |
+| 업로드 시 `session.updated_at` **미변경** | 갱신 | 파일을 올린 것만으로 "활동 중"이 되면 STALE 보정(BR-S-04)이 의미를 잃는다 |
+| `DocumentView.internal_path` **허용** | 제거 | 소유자가 자기 문서 경로를 보는 것은 권한 우회가 아니다. FR-43 이 막는 것은 *다른 사람* 지식 인용 시 경로 유출 |
+| `lint-web.sh` → **`lint_web.py`** | bash grep 유지 | grep 이 규칙을 설명하는 **주석까지** 잡았다 (오탐 3건, Day 2·3 에서 같은 문제 2회). 주석 제거 + 줄 단위 허용마커 + 영역 한정 |
+| 픽스처 재녹화는 **빠진 것만 채운다** | 무조건 덮어쓰기 | 재녹화 한 번이 게이트를 조용히 뒤집었다 (결함 30) |
+| 실측 스크립트를 **Python** 으로 | bash + heredoc | heredoc 5개의 인용 사고 + HTTP 오류에 원시 traceback 만 보였다 |
 
 ## Open Items for User
 
@@ -278,5 +321,6 @@ AWS 자격증명 갱신 후 **EXAONE + Bedrock 을 모두 실제로 쓰는 첫 �
 | 2 | 미결 설계 결정 6건 확인 (AI가 결정했음) | 같은 문서 Round 2 (Q9~Q14) |
 | 3 | **사내망 EXAONE 엔드포인트 확보 가능 여부** | 같은 문서 Q15 |
 | 4 | 이식성 대비 수준 확인 | 같은 문서 Q16 |
+| 5 | **G4 육안 확인 체크박스 서명** (10건) | `construction/g4-payload-dump.md` |
 
 **1~4번은 blocking이 아니다.** AI 결정대로 진행 가능하며, 다르게 가고 싶은 것만 알려주면 된다.

@@ -642,7 +642,11 @@ class Gatekeeper:
             size_bytes=env.size_bytes,
             validation_summary=result.summary,
             checks=result.checks,
-            excluded_categories=validator.excluded_categories(env.payload, self.data.banned),
+            # ⚠️ `representation` 을 넘긴다. 넘기지 않으면 사내 등급 미리보기가
+            #    "원문 문장 없음"이라고 거짓말한다 (G4 육안 확인이 찾은 결함).
+            excluded_categories=validator.excluded_categories(
+                env.payload, self.data.banned, env.representation
+            ),
             verbatim_sentence_count=validator.verbatim_sentence_count(
                 env.payload,
                 originals,

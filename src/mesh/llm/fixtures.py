@@ -34,9 +34,11 @@ def fixture_key(*parts: str) -> str:
 class FixtureStore:
     """`data/fixtures/{kind}/{name}_{key}.json` 를 읽고 쓴다."""
 
-    def __init__(self, root: Path, *, record: bool = False) -> None:
+    def __init__(self, root: Path, *, record: bool = False, overwrite: bool = False) -> None:
         self.root = root
         self.record = record
+        #: 기존 픽스처를 덮어쓸지. 기본값 `False` 인 이유는 `save()` 참조.
+        self.overwrite = overwrite
 
     def _path(self, kind: str, name: str, key: str) -> Path:
         return self.root / kind / f"{name}_{key}.json"
@@ -53,9 +55,34 @@ class FixtureStore:
         return json.loads(p.read_text(encoding="utf-8"))
 
     def save(self, kind: str, name: str, key: str, payload: dict) -> None:
+        """녹화. **이미 있는 픽스처는 덮어쓰지 않는다.**
+
+        ⚠️ 처음에는 무조건 덮어썼다. 그러면 재녹화 한 번이 **게이트를 조용히
+           뒤집는다.** 실측으로 겪은 것:
+
+               classify_f0c464f5d54d.json
+               - "tier": "secret"     ← G2(기밀 재현율 100%)를 통과시킨 값
+               + "tier": "internal"   ← 같은 입력, 다른 실행
+
+        같은 프롬프트에 모델이 다른 답을 준 것이다. 키는 **입력**에서 유도되므로
+        바뀌지 않았고, 그래서 `git diff` 에 한 줄로 나타난다. 놓치기 쉽다.
+
+        픽스처의 목적은 "그때 모델이 이렇게 답했다"를 **고정**하는 것이다.
+        재녹화가 그 고정을 깨면 목업 모드가 재현 가능하지 않게 되고,
+        오프라인 데모와 게이트가 실행마다 달라진다.
+
+        새 프롬프트(= 새 키)는 파일이 없으므로 그대로 녹화된다. 즉 재녹화는
+        **빠진 것만 채운다.** 기존 응답을 갱신하려면 그 파일을 지우고 돌린다 —
+        지우는 것은 의도적인 행위이고 `git status` 에 남는다.
+
+        `MESH_FIXTURE_OVERWRITE=1` 로 강제할 수 있다. 기본값은 아니다.
+        """
         if not self.record:
             return
         p = self._path(kind, name, key)
+        if p.exists() and not self.overwrite:
+            log.debug("픽스처 유지 — 이미 있다", extra={"fixture": p.name})
+            return
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         log.info("픽스처 녹화", extra={"fixture": p.name})

@@ -200,6 +200,13 @@ def safe_resolve(rel: str, root: Path) -> Path:
     s = rel.replace(_DATA_ROOT_VAR + "/", "").replace(_DATA_ROOT_VAR, "")
     if not s.strip():
         raise PathEscapeError(f"빈 경로: {rel!r}")
+    if "\x00" in s:
+        # ⚠️ PBT(PB-S1) 가 찾은 결함. `os.path.realpath("\x00")` 는
+        #    `ValueError: embedded null byte` 를 낸다 — `PathEscapeError` 가
+        #    아니다. 이 함수의 계약은 "탈출 시도는 PathEscapeError" 이고,
+        #    호출자는 그 예외만 처리한다. `ValueError` 가 새어 나가면
+        #    업로드 경로에서 500 이 되고, 감사 로그에 남지 않는다.
+        raise PathEscapeError(f"경로에 NUL 바이트가 있다: {rel!r}")
     if s.startswith(("/", "\\")) or (len(s) > 1 and s[1] == ":"):
         raise PathEscapeError(
             f"절대 경로는 저장·사용할 수 없다. MESH_DATA_ROOT 상대 경로를 쓰라: {rel!r}"
@@ -293,6 +300,9 @@ class Config:
     # 데모 보조
     demo_now: datetime | None
     record_fixtures: bool
+    #: 이미 있는 픽스처를 덮어쓸지. 기본값 `False` —
+    #: 재녹화 한 번이 게이트를 조용히 뒤집는 것을 막는다 (`FixtureStore.save` 참조).
+    fixture_overwrite: bool
 
     # ── 파생 ──────────────────────────────────────────────────────────
 
@@ -415,6 +425,7 @@ class Config:
             stale_confidence_factor=_env_float("STALE_CONFIDENCE_FACTOR", 0.8),
             demo_now=demo_now,
             record_fixtures=_env_bool("MESH_RECORD_FIXTURES"),
+            fixture_overwrite=_env_bool("MESH_FIXTURE_OVERWRITE"),
         )
         if strict:
             cfg.validate()
@@ -499,7 +510,42 @@ class DataBundle:
         self.agents: dict[str, AgentConfig] = (
             load_agents(cfg.agents_path) if load_agent_configs else {}
         )
+        self._add_entity_ids_to_pseudonyms()
         self._check_lists_are_disjoint()
+
+    def _add_entity_ids_to_pseudonyms(self) -> None:
+        """등록된 `entity_id` 와 표시 이름을 PERSON 치환 대상에 넣는다.
+
+        ⚠️ **G4 육안 확인이 찾아낸 결함이다** (자동 검사는 통과했다).
+
+        `pseudonyms.json` 의 PERSON 목록에는 사람 이름(`박선영`)만 있었다.
+        그런데 코퍼스 파일 헤더는 `# owner: person:park` 라고 적는다 —
+        같은 사람의 **다른 표기**다. 그래서 사내 등급 발췌가 경계를 넘을 때
+        `person:park` 가 그대로 실려 나갔다.
+
+        자동 검사가 놓친 이유: `sweep_for_leaks` 는 "식별자를 포함한 n-gram"만
+        보고, `person:park` 는 식별자 목록에 없었으므로 식별자가 아니었다.
+        **목록에 없는 것은 검사되지 않는다** — 이것이 G4 를 사람이 하는 이유다.
+
+        `pseudonyms.json` 에 손으로 적지 않는 이유: `agents.yaml` 에 사람을
+        추가할 때 두 파일을 고쳐야 하고, 하나를 잊으면 조용히 새어 나간다.
+        FR-23 이 "설정 한 곳"을 요구하는 것과 같은 이유다. 여기서 유도하면
+        새 사람이 자동으로 보호된다.
+        """
+        if not self.agents:
+            return
+        extra: list[str] = []
+        for entity_id, agent in self.agents.items():
+            extra.append(entity_id)
+            # `person:kim` 의 지역 부분(`kim`)은 넣지 않는다. 2~3자 토큰은
+            # 본문의 무관한 단어와 충돌해 답변을 망가뜨린다 (BR-P-01 의 반대편
+            # 위험). 전체 형태만 치환하고, 사람 이름은 아래에서 다룬다.
+            if agent.display_name:
+                extra.append(agent.display_name)
+        person = tuple(dict.fromkeys((*self.pseudonyms.targets.get("PERSON", ()), *extra)))
+        self.pseudonyms = self.pseudonyms.model_copy(
+            update={"targets": {**self.pseudonyms.targets, "PERSON": person}}
+        )
 
     def _check_lists_are_disjoint(self) -> None:
         """차단 목록과 치환 목록이 겹치면 안 된다.

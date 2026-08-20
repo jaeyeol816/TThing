@@ -462,3 +462,90 @@ Schema refinement: the role field was moved out of vocab.json slots and into a t
 **Context**: LLM 호출 — EXAONE 약 30회 · Bedrock 약 12회 (첫 live 종단 + 결함 4건 재검증 + 픽스처 녹화). 픽스처가 남았으므로 이후 오프라인으로 반복 가능
 
 ---
+
+## Day 4~5 구현 요청
+**Timestamp**: 2026-08-20T13:40:00Z
+**User Input**: "넵 그러면 현재 의도한대로 bedrock, friendli가 잘 연결되는거죠? 그러면 이어서 나머지 모든 부분 (day4,5)을 구현해주시고, 검증도 해주세요. 참고로 프론트 관련해서는 TAURI 를 사용하여 웹앱 을 만들어주시고, 실제로 바로 실행 가능한 상태로 만들어주시고 실행 가이드라인까지 만들어주세요. 참고로 사용사례에서 어떤 임시 기밀 문서를 제가 직접 만들어서 컴퓨터에서 올리는 시점부터 다른 사람이 챗을 거는거 이런게 모두 프론트, 백엔드에서 제공되어야 합니다. UI 설계는 알아서 잘 해주세요.
+
+어떻게 구현되었는지 설계 자료 (mermaid 다이어그램포함), 어떻게 사용하는지에 대한 자세한 설명 자료도 만들어주세요."
+**AI Response**: U4 전체(업로드 API + 화면 + Tauri 셸) + 게이트 G4 + 설계 자료 + 사용 설명서를 구현하고 검증했다.
+**Context**: Day 4~5. 상세는 `construction/day4-5-implementation-report.md`
+
+---
+
+## Day 4 — 업로드 입구
+**Timestamp**: 2026-08-20T13:55:00Z
+**AI Response**: `api_models` 업로드 계약 · `store.save_upload` 3중 검사 · `documents.py`(L6) · 라우트 5개 · `data/questions.json`.
+업로드를 **텍스트 JSON** 으로 받는다 (multipart 기각 — 대상이 전부 텍스트이고 파서 사고가 잦고, 클라이언트가 무엇을 보내는지 보여줄 수 있다).
+`.sh`·`.sql`·`.py` 는 **허용**한다 — 기준은 "실행 위험"이 아니라 "텍스트로 읽히는가"다. 이 시스템은 파일을 실행하지 않는다.
+업로드 시 `session.updated_at` 을 **건드리지 않는다** — 파일을 올린 것이 "지금 그 일을 하고 있다"가 되면 STALE 보정(BR-S-04)이 의미를 잃는다.
+`mesh.documents` 를 **L6** 에 뒀다 (`store` L5 를 import 하므로 같은 층이면 규칙 위반).
+**Context**: 새 입구는 새 위험이다. 업로드는 유일하게 외부에서 온 이름으로 파일시스템을 건드리는 경로다
+
+---
+
+## Day 4 — 화면 · 정적 검사기 교체
+**Timestamp**: 2026-08-20T14:05:00Z
+**AI Response**: `web/` 3개 파일(탭 4개, 빌드 없음). `scripts/lint-web.sh` **삭제** → `scripts/lint_web.py` 신설.
+bash grep 검사기가 화면을 만들자마자 **오탐 3건**을 냈다 — 규칙을 설명하는 주석의 `internal_path`·`innerHTML`, 그리고 페이로드와 무관한 붙여넣기 폼의 `<details>`. Day 2·3 에서 같은 문제를 두 번 겪었다.
+문자열 검사가 주석까지 잡으면 사람이 **주석을 지우거나 검사를 약화시킨다.** 조치: 주석 제거(문자열 리터럴 안의 `//` 는 보존하는 상태 기계) + 줄 단위 허용마커(상한 2건) + 영역 한정.
+🔴 함정: 허용마커를 **주석 제거된 줄**에서 찾으면 절대 발견되지 않는다. 처음 그 실수를 해서 마커가 전혀 동작하지 않았다 → 원본 줄에서 찾는다.
+`payload(?!_sha256)` 로 좁혔다 — 해시 앞 12자만 보여주는 것은 페이로드 절단이 아니다.
+**Context**: SG17 신설
+
+---
+
+## Day 4 — Tauri 데스크톱 셸
+**Timestamp**: 2026-08-20T14:00:00Z
+**AI Response**: Rust 설치(cargo 1.97.1) 후 `app/` 생성. `cargo build --release` 성공(1m50s), `npm run tauri dev` 창 열림 실측.
+**정적 파일 번들을 기각했다** — 번들하면 origin 이 `tauri://localhost` 가 되어 `fetch("/api/...")` 가 백엔드에 도달하지 못한다. 절대 URL 로 바꾸면 `connect-src` 개방 + 호스트 하드코딩 + "외부 URL 0건" 규칙 붕괴. **백엔드 주소를 그대로 열면 같은 origin 이 되어 FastAPI 의 CSP·보안 헤더가 그대로 적용된다** — 데스크톱 셸이 보안 속성을 바꾸지 않는 것이 핵심.
+창을 Rust `setup()` 에서 만든다 (`windows: []`) — 백엔드 준비 전 빈 창을 띄우지 않는다. 120초 초과면 창을 만들지 않고 실패를 알린다. 준비 확인은 TCP 만 (HTTP 클라이언트 의존성 추가 기각).
+아이콘은 순수 Python(`zlib`+`struct`)으로 PNG 를 만들고 `iconutil` 로 `.icns` 로 변환했다 (외부 도구 기각).
+`Makefile run:` 이 존재하지 않는 `mesh.main:app` 을 가리켜 **깨져 있었다** → `--factory mesh.main:create_app`.
+**Context**: `make app` / `app-setup` / `app-build` 추가
+
+---
+
+## Day 5 — 게이트 G4 육안 전수: 자동 검사가 놓친 결함 2건
+**Timestamp**: 2026-08-20T14:30:00Z
+**AI Response**: `scripts/dump_payloads.py` 로 경계를 넘은 것 전부를 마크다운으로 덤프하고 **직접 읽었다.** 자동 검사(원문 5-gram + 금칙어)는 0건으로 통과한 상태였다.
+🔴 **발견 27**: 사내 등급 발췌에 `# owner: person:park` 가 실려 나갔다. `pseudonyms.json` 의 PERSON 목록에는 사람 이름(`박선영`)만 있었고, 코퍼스 헤더는 **같은 사람의 다른 표기**를 쓴다. `sweep_for_leaks` 는 "식별자를 포함한 n-gram"만 보고 `person:park` 는 목록에 없으므로 **식별자가 아니었다.** 목록에 없는 것은 검사되지 않는다 — 이것이 G4 를 사람이 하는 이유다. 조치: `DataBundle._add_entity_ids_to_pseudonyms()` 가 `agents.yaml` 에서 entity_id·display_name 을 **유도**한다. 두 파일을 고치게 만들면 하나를 잊고 유출된다(FR-23 과 같은 근거). `person:kim` 의 `kim` 부분은 넣지 않았다 — 2~3자 토큰은 무관한 단어와 충돌해 답변을 망가뜨린다.
+🔴 **발견 28**: `excluded_categories` 가 표현과 무관하게 같은 8개를 반환해, 사내 등급 미리보기가 "원문 문장·제품명·버전·일정 없음"이라고 표시하면서 페이로드에는 `SDK v3.2` 와 `2025-12-03` 과 문서 전문이 들어 있었다. **유출이 아니라 거짓 보증이다.** 유출보다 나쁜 이유: 사용자는 이 목록을 읽고 [전송] 을 누른다 — 목록이 거짓이면 "사람이 미리보기를 확인한다"는 방어 겹 자체가 무의미해진다. `validator.excluded_categories()` 의 docstring 이 원래부터 "확인하지 않은 것을 없다고 쓰면 미리보기가 거짓이 된다"고 적고 있었다 — **코드가 자기 계약을 어기고 있었다.** 조치: `EXCLUDED_CATEGORIES_BY_REPRESENTATION`(structured 8 / pseudonymized 5 / verbatim 0).
+남기기로 결정한 것 3건(`SDK v3.2` 산문 표기 · 문서 본문의 상대 경로 · 컬럼명)은 `KNOWN_RESIDUALS` 에 근거와 함께 기록했다 — 적어두지 않으면 다음 사람이 같은 것을 다시 조사하고, 적어두면 그 판단을 반박할 수 있다.
+자동 검사 최종: 페이로드 10건 × 문서 11건 → 원문 조각 0 · 금칙어 0.
+**Context**: G4. 자동 검사는 회귀를 막고 사람은 처음 보는 것을 찾는다. 대체 관계가 아니다
+
+---
+
+## Day 5 — 그 밖에 찾아 고친 결함 6건
+**Timestamp**: 2026-08-20T14:50:00Z
+**AI Response**:
+🔴 **발견 29**: FastAPI 기본 `RequestValidationError` 핸들러가 오류마다 `input` 을 담아 **요청 본문을 되비췄다.** 업로드가 상한을 넘기면 방금 올린 기밀 문서 전문(최대 200,000자)이 오류 응답에 실린다. 요청자 자신에게 돌아가므로 유출은 아니지만, 오류 응답이 원문을 담는 습관은 로그·프록시·브라우저 히스토리로 원문을 퍼뜨린다. 조치: `_field_summary()` 로 **필드 이름과 사유만**.
+🔴 **발견 30**: `FixtureStore.save()` 가 무조건 덮어써서 재녹화 한 번에 `classify_f0c464f5d54d.json` 의 `tier` 가 `secret`→`internal` 로 바뀌었다. **G2(기밀 재현율 100%)를 통과시킨 값이다.** 키는 입력에서 유도되므로 바뀌지 않고 `git diff` 에 한 줄로만 나타난다. 조치: 재녹화는 **빠진 것만 채운다**. 갱신은 파일 삭제 또는 `MESH_FIXTURE_OVERWRITE=1` — 둘 다 의도적이고 `git status` 에 남는다.
+**발견 31**: NUL 바이트가 `PathEscapeError` 대신 `ValueError` 로 새어 나갔다 (`os.path.realpath("\x00")`). 속성 테스트 PB-S1 이 찾았다. 업로드 경로에서 500 이 되고 감사 로그에 남지 않는다.
+**발견 32**: `Makefile run:` 이 깨져 있었다 (위 항목).
+**발견 33**: 시드 JSON 이 되쓰일 때 줄바꿈을 잃어 매 실행 `git diff` 잡음이 남았다 → `store._write_json()`.
+**발견 34**: `conftest.full_data_root` 가 `data/corpus/*/uploads/` 를 복사해, "어제 시연에서 올린 파일" 때문에 오늘 테스트가 깨졌다(실제로 깨졌다) → 복사 제외 + `.gitignore` 추가. **사용자가 올린 문서는 소스가 아니다** — 커밋하면 남의 기밀이 저장소 역사에 영구히 남는다.
+실측 스크립트를 bash(heredoc 5개)에서 Python 으로 다시 썼다 — HTTP 오류에 원시 traceback 만 보였고, 이제 오류 본문(`error`+`detail`+`correlation_id`)을 함께 보여주고 목업 모드면 즉시 멈춘다.
+**Context**: SG19·SG20 신설
+
+---
+
+## Day 5 — 설계 자료 · 사용 설명서
+**Timestamp**: 2026-08-20T15:05:00Z
+**AI Response**: `docs/설계자료.md`(Mermaid 15개 — 등급 분기 · 시스템 구성 · 경계 위치 · 업로드 시퀀스 · 질문 시퀀스 · 판정 규칙 · 조립 방향 · 검증 6단계 · 신뢰도 분기 · 세션 상태머신 · 레이어 · ER · 화면 · Tauri 기동 · 테스트 구성) + `docs/사용설명서.md`(설치 → 실행 3가지 → 화면 → **실사례 8단계** → 인박스 → 감사 → 명령어 → 문제 해결 → 이식성).
+Mermaid 15개 전부 `mermaid.parse()` 로 검증했다 (jsdom + mermaid 11).
+사용 설명서의 사실 주장을 떠 있는 서버로 실측했다 — 사용자 3명 이름, 프리셋 4개, 감사 검색 4개 문구 0건 + `session_binding` 17건, 오프라인 명령이 실제로 `exaone_mode=mock` 이 되는지.
+인박스 3버튼 문구를 코드와 맞췄다 (`내가 아님` + 드롭다운. 처음 `직접 답변` 이라고 잘못 적었다).
+**Context**: 사용자가 요청한 산출물 2건
+
+---
+
+## Day 5 — 최종 검증
+**Timestamp**: 2026-08-20T15:15:00Z
+**AI Response**: 테스트 1,101개 통과(1 skip) · `make lint` 통과(허용 예외 1건) · `make audit` 0건 · G2 11/11=100% · G3 44개 · G4 자동 0건 · G5 오프라인 재생.
+라이브 종단 실측: 업로드 → 기밀 판정(근거 포함) → 타인 질문 → 검증 6/6 · 원문 문장 0 · 727B → Bedrock 답변 1,034자 · 인용 3건 · 신뢰도 0.85 → 감사 검색 6개 문구 전부 0건, `session_binding` 7건.
+u4 계획 체크박스 132/142 (미완 10건은 근거를 함께 기록: `?mock` 불필요 · thread 묶기 미구현 · bash 검사기 기각 · 파일 크기 초과 수용 · G4 서명).
+**Context**: LLM 호출 — 픽스처 재녹화 2회 + 라이브 실측 4회. 사용자 요청대로 사용량을 억제했다
+
+---

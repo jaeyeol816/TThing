@@ -546,3 +546,256 @@ def test_static_paths_respond(client, path):
 def test_unmapped_path_is_404(client):
     assert client.get("/../../etc/passwd").status_code in {404, 400}
     assert client.get("/web/index.html").status_code == 404
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 문서 업로드 (Day 4) — HTTP 계층
+# ══════════════════════════════════════════════════════════════════════
+#
+# `test_documents.py` 가 서비스 계층을 덮는다. 여기서 보는 것은 **HTTP 로
+# 올라올 때 무엇이 달라지는가**다: 상태 코드, 오류 응답 형태, 그리고
+# 프런트가 실제로 쓰는 필드가 응답에 있는지.
+
+UPLOAD_SECRET = "# title: HTTP 계약 메모\n\n고객사 H 와 총액 12억 원 규모로 합의했다.\n"
+UPLOAD_PLAIN = "# title: 재시도 지침\n\n지수 백오프로 3회 재시도한다.\n"
+
+
+def _upload(client, **overrides):
+    body = {
+        "owner": "person:kim",
+        "filename": "http-memo.md",
+        "content": UPLOAD_PLAIN,
+        "attach_to_session": False,
+    }
+    body.update(overrides)
+    return client.post("/api/documents", json=body)
+
+
+def test_upload_returns_tier_with_evidence(client):
+    """업로드 응답이 곧 첫 데모 장면이다 — 등급과 **근거**를 함께 준다.
+
+    근거가 없으면 "왜 기밀인가"에 답할 수 없고, 등급 판정이 블랙박스로 보인다.
+    """
+    r = _upload(client, filename="contract.md", content=UPLOAD_SECRET)
+    assert r.status_code == 200
+    doc = r.json()["document"]
+    assert doc["tier"] == "secret"
+    assert doc["tier_evidence"], "근거 없는 판정은 블랙박스다"
+    assert all({"rule", "reason"} <= set(e) for e in doc["tier_evidence"])
+    assert r.json()["in_scope"] is True
+
+
+def test_upload_response_has_the_fields_the_ui_uses(client):
+    """화면이 참조하는 필드를 계약으로 고정한다.
+
+    하나라도 이름이 바뀌면 화면이 `undefined` 를 그린다 — 조용한 실패다.
+    """
+    doc = _upload(client).json()["document"]
+    assert {
+        "document_id",
+        "owner",
+        "filename",
+        "size_bytes",
+        "uploaded_at",
+        "tier",
+        "tier_evidence",
+        "attached",
+        "seeded",
+    } <= set(doc)
+
+
+def test_upload_rejects_path_traversal_with_422(client):
+    """경로 탈출은 `api_models` 가 먼저 막는다 → 422 (요청 형식 오류)."""
+    r = _upload(client, filename="../escape.md")
+    assert r.status_code == 422
+    assert r.json()["error"] == "validation_error"
+
+
+def test_upload_rejects_unknown_owner_with_400(client):
+    """미등록 사용자는 형식은 맞고 내용이 틀렸다 → 400 (MeshError)."""
+    r = _upload(client, owner="person:nobody")
+    assert r.status_code == 400
+    assert r.json()["error"] == "UploadRejected"
+
+
+def test_upload_rejects_oversized_content(client):
+    from mesh.api_models import MAX_UPLOAD_CHARS
+
+    r = _upload(client, content="가" * (MAX_UPLOAD_CHARS + 1))
+    assert r.status_code == 422
+
+
+def test_validation_error_does_not_echo_the_document(client):
+    """**422 응답이 요청 본문을 되비추지 않는다.**
+
+    FastAPI 기본 핸들러는 오류마다 `input` 을 담는다 — 업로드가 상한을
+    넘겼을 때 방금 올린 기밀 문서 전문이 오류 응답에 실렸다 (실측).
+    요청자 자신에게 돌아가므로 유출은 아니지만, 원문을 담는 오류 응답은
+    로그·프록시·브라우저 히스토리로 원문을 퍼뜨린다.
+    """
+    from mesh.api_models import MAX_UPLOAD_CHARS
+
+    secret = "고객사 H 총액 12억 원 REQ-4412 기밀 본문"
+    r = _upload(client, content=secret + "가" * MAX_UPLOAD_CHARS)
+
+    assert r.status_code == 422
+    assert "고객사 H" not in r.text
+    assert "REQ-4412" not in r.text
+    assert "12억" not in r.text
+    # 응답 크기가 요청 크기에 비례해 커지지 않는다
+    assert len(r.content) < 1000, "오류 응답이 본문 크기를 따라 커진다"
+
+
+def test_validation_error_keeps_the_error_contract(client):
+    """모든 오류가 같은 형태여야 화면이 오류를 표시할 수 있다."""
+    r = _upload(client, filename="../escape.md")
+    body = r.json()
+    assert r.status_code == 422
+    assert body["error"] == "validation_error"
+    assert body["correlation_id"]
+    # 어느 필드가 틀렸는지는 알려준다 — 고칠 수 있어야 한다
+    assert "filename" in body["detail"]
+
+
+def test_validation_error_names_the_field_without_the_value(client):
+    r = _upload(client, owner="not-an-entity-id")
+    body = r.json()
+    assert r.status_code == 422
+    assert "owner" in body["detail"]
+    assert "not-an-entity-id" not in r.text, "틀린 값을 되비추지 않는다"
+
+
+def test_upload_error_response_has_no_internal_path(client):
+    """오류 메시지가 파일시스템 구조를 알려주면 그 자체가 정보다."""
+    r = _upload(client, filename="../escape.md")
+    assert "/Users/" not in r.text
+    assert "corpus/" not in r.text
+
+
+def test_upload_does_not_attach_by_default_flag(client, wiring):
+    _upload(client, filename="not-attached.md")
+    session = wiring.store.load_session("person:kim")
+    assert not any("not-attached.md" in p for p in session.open_paths)
+
+
+def test_upload_attaches_when_asked(client, wiring):
+    r = _upload(client, filename="attached.md", attach_to_session=True)
+    rel = r.json()["document"]["internal_path"]
+    assert rel in wiring.store.load_session("person:kim").open_paths
+
+
+def test_document_list_separates_uploads_from_seeded(client):
+    _upload(client, filename="mine.md")
+    r = client.get("/api/documents", params={"owner": "person:kim"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["owner"] == "person:kim"
+    by_name = {d["filename"]: d for d in body["documents"]}
+    assert by_name["mine.md"]["seeded"] is False
+    assert any(d["seeded"] for d in body["documents"])
+
+
+def test_document_list_requires_owner(client):
+    assert client.get("/api/documents").status_code == 422
+
+
+def test_document_delete_roundtrip(client, wiring):
+    r = _upload(client, filename="temp.md", attach_to_session=True)
+    doc = r.json()["document"]
+    resolved = wiring.store.resolve(doc["internal_path"])
+
+    d = client.delete(f"/api/documents/{doc['document_id']}", params={"owner": "person:kim"})
+    assert d.status_code == 200
+    assert d.json() == {"deleted": True}
+    assert not resolved.exists()
+
+
+def test_document_delete_unknown_is_404(client):
+    r = client.delete("/api/documents/doc_deadbeef1234", params={"owner": "person:kim"})
+    assert r.status_code == 404
+
+
+def test_document_delete_by_other_owner_is_404(client, wiring):
+    """남의 문서 id 로 지울 수 없다. 목록에 없으면 존재하지 않는 것과 같다."""
+    doc = _upload(client, filename="kims.md").json()["document"]
+    r = client.delete(f"/api/documents/{doc['document_id']}", params={"owner": "person:park"})
+    assert r.status_code == 404
+    assert wiring.store.resolve(doc["internal_path"]).is_file()
+
+
+def test_uploaded_secret_never_reaches_the_payload(client):
+    """**업로드 → 질문 종단.** 올린 기밀이 경계를 넘는 페이로드에 없다.
+
+    이게 이 프로젝트의 주장 그 자체다. 업로드 경로가 생겼으니
+    그 경로로 들어온 원문도 같은 보장을 받아야 한다.
+    """
+    client.post(
+        "/api/documents",
+        json={
+            "owner": "person:kim",
+            "filename": "fresh-secret.md",
+            "content": (
+                "# title: 갓 올린 기밀\n\n"
+                "고객사 H 요구사항 REQ-4412 는 30분 주기 재인증을 강제한다.\n"
+                "총액 12억 원 규모이며 납기는 2026-11-30 이다.\n"
+            ),
+            "attach_to_session": True,
+        },
+    ).raise_for_status()
+
+    r = client.post(
+        "/api/ask/prepare",
+        json={
+            "asker": "person:park",
+            "question": "고객사 요구사항과 우리 SDK 토큰 갱신 방식이 충돌하나요?",
+            "targets": ["person:kim"],
+        },
+    )
+    assert r.status_code == 200
+    previews = [c["preview"] for c in r.json()["calls"] if c["preview"]]
+    assert previews, "미리보기가 없으면 검사할 것이 없다"
+    for preview in previews:
+        payload = preview["payload_pretty"]
+        for forbidden in ("고객사 H", "REQ-4412", "12억", "2026-11-30"):
+            assert forbidden not in payload, f"경계를 넘는 페이로드에 {forbidden} 이 있다"
+        assert preview["verbatim_sentence_count"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 사용자 · 질문 프리셋 (Day 4)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_users_lists_switchable_people(client):
+    r = client.get("/api/users")
+    assert r.status_code == 200
+    users = r.json()
+    assert len(users) == 3
+    assert {u["entity_id"] for u in users} == {"person:kim", "person:park", "person:choi"}
+    for u in users:
+        assert u["display_name"]
+
+
+def test_users_response_has_no_session_text(client):
+    """사용자 목록은 인증 없이 보인다. 세션 원문이 섞이면 게이트키퍼 우회다."""
+    body = client.get("/api/users").text
+    for leak in ("고객사 H", "REQ-4412", "corpus/"):
+        assert leak not in body
+
+
+def test_questions_presets_are_usable(client):
+    """프리셋은 서버가 준다 — 대본을 고칠 때 JS 를 건드리지 않는다."""
+    r = client.get("/api/questions")
+    assert r.status_code == 200
+    presets = r.json()
+    assert presets, "프리셋이 비면 화면 드롭다운이 빈다"
+    for p in presets:
+        assert p["label"] and p["question"]
+        assert 1 <= len(p["targets"]) <= 2
+
+
+def test_question_presets_target_real_agents(client):
+    """대본의 지목 대상이 실제로 존재해야 한다. 아니면 시연 중에 발견한다."""
+    known = {u["entity_id"] for u in client.get("/api/users").json()}
+    for p in client.get("/api/questions").json():
+        assert set(p["targets"]) <= known, f"{p['label']} 의 지목 대상이 없다"

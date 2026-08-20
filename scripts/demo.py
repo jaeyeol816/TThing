@@ -78,7 +78,7 @@ SCENARIOS: list[dict] = [
     },
     {
         "act": "3막 · 두 사람의 답을 모두 보여준다",
-        "question": "왜 세션 바인딩을 넣지 않았나요? 이유가 궁금합니다",
+        "question": "왜 세션 바인딩을 넣지 않았나요? 그 결정 배경을 알고 싶습니다",
         "targets": ["person:kim", "person:choi"],
         "watch": [
             "답을 하나 고르지 않는다. 양쪽을 병기하고 판단은 사람에게 남긴다",

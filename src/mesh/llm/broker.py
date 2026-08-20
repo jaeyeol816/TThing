@@ -46,7 +46,11 @@ class BrokerClient:
         self._client = client
         self._owns_client = client is None
         self._bedrock = bedrock
-        self._fixtures = FixtureStore(cfg.fixtures_root, record=cfg.record_fixtures)
+        self._fixtures = FixtureStore(
+            cfg.fixtures_root,
+            record=cfg.record_fixtures,
+            overwrite=cfg.fixture_overwrite,
+        )
 
     # ── 수명 관리 ────────────────────────────────────────────────────
 

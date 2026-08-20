@@ -157,9 +157,14 @@ def full_data_root(tmp_path: Path, monkeypatch) -> Path:
     """
     import shutil
 
-    for name in REQUIRED_DATA_FILES + ("labels.json",):
+    # `questions.json` 은 필수가 아니지만(없으면 빈 목록) 복사한다 —
+    # 실물 대본이 코드와 어긋나면 테스트가 잡아야 한다.
+    for name in REQUIRED_DATA_FILES + ("labels.json", "questions.json"):
         (tmp_path / name).write_bytes((DATA / name).read_bytes())
-    shutil.copytree(DATA / "corpus", tmp_path / "corpus")
+    # ⚠️ `uploads/` 는 복사하지 않는다. 그 디렉터리는 사람이 데모 중에 올린
+    #    파일이 쌓이는 곳이고, 저장소 상태에 따라 내용이 달라진다. 복사하면
+    #    "어제 시연에서 올린 파일" 때문에 오늘 테스트가 깨진다 (실제로 깨졌다).
+    shutil.copytree(DATA / "corpus", tmp_path / "corpus", ignore=shutil.ignore_patterns("uploads"))
     shutil.copytree(DATA / "sessions", tmp_path / "sessions")
     (tmp_path / "verified").mkdir()
     (tmp_path / "fixtures").mkdir()
