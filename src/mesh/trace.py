@@ -123,6 +123,8 @@ class TraceEvidence(BaseModel):
 
     #: 화면에 보이는 제목. 경로가 아니다.
     title: str
+    #: 절대 경로. UI 에서 경로+제목으로 표시할 때 쓴다 (TR-43 override — 트레이스 전용).
+    source_path: str = ""
     tier: Tier | None = None
     #: "note" / "doc" / "code" / "config" / "log" 등. 사람이 읽을 종류 표시.
     source_kind: str = ""
@@ -539,6 +541,8 @@ class TraceRecorder:
             )
         ]
         for item in evidence:
+            # ⚠️ 경로는 트레이스에 싣지 않는다 (FR-43). 경로 자체가 정보다 —
+            #    `customer-H/` 같은 세그먼트가 고객사명을 드러낸다. 제목만 보여준다.
             rows.append(
                 TraceRow(
                     cells=(

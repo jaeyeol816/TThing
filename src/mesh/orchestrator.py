@@ -61,7 +61,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
 from mesh.agent import AgentClient, DailyLimitReached
@@ -556,7 +556,11 @@ class Orchestrator:
 
     # ── 상담 — 질문자의 Agent 가 대신 물어보고 모은다 ───────────────
 
-    async def consult(self, request: ConsultRequest) -> ConsultResult:
+    async def consult(
+        self,
+        request: ConsultRequest,
+        on_event: Callable[..., Awaitable[None]] | None = None,
+    ) -> ConsultResult:
         """브로드캐스트 → 답할 수 있는 사람들에게 **자동으로** 질의 → 정리.
 
         ──────────────────────────────────────────────────────────────
@@ -688,10 +692,29 @@ class Orchestrator:
         # 사람마다 따로 prepare/send 한다. 한 요청에 묶지 않는 이유:
         # 한 사람이 차단돼도 나머지는 그대로 진행돼야 하고(R-02), 실패의 원인이
         # 사람 단위로 남아야 화면이 "누가 왜 못 답했는지" 를 말할 수 있다.
+        if on_event:
+            await on_event("broadcast_start", agents=chosen)
+
+        async def _one_with_events(target: str) -> AskResult:
+            if on_event:
+                await on_event("agent_querying", entity_id=target)
+            try:
+                _result = await self._consult_one(request, target)
+                if on_event:
+                    await on_event("agent_responded", entity_id=target, status="answered")
+                return _result
+            except BaseException:
+                if on_event:
+                    await on_event("agent_responded", entity_id=target, status="error")
+                raise
+
         outcomes = await asyncio.gather(
-            *[self._consult_one(request, target) for target in chosen],
+            *[_one_with_events(target) for target in chosen],
             return_exceptions=True,
         )
+
+        if on_event:
+            await on_event("broadcast_end", agents=chosen)
 
         answers: list[RehydratedAnswer] = []
         escalations: list[str] = []
@@ -894,6 +917,7 @@ class Orchestrator:
             out.append(
                 TraceEvidence(
                     title=chunk.display_title,
+                    source_path=chunk.internal_path,
                     tier=chunk.tier or (decision.tier if decision else None),
                     source_kind=chunk.source_kind or "",
                     as_of=chunk.as_of.isoformat() if chunk.as_of else "",
