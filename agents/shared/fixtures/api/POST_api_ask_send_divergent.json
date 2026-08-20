@@ -1,0 +1,56 @@
+{
+  "request_id": "req_01JS3A",
+  "merged": {
+    "answers": [
+      {
+        "entity_id": "person:kim",
+        "agent_label": "김철수 책임의 Agent",
+        "text": "성능 문제입니다. 동시 인증 3천 TPS 구간에서 세션 조회 지연이 임계를 넘어 제외했습니다.",
+        "confidence": 0.71,
+        "citations": [
+          {
+            "ref": "NOTE_A",
+            "display_title": "인증 설계 메모",
+            "section": null,
+            "tier": "internal",
+            "as_of": "2025-11-14",
+            "formality": "informal"
+          }
+        ],
+        "tier": "internal",
+        "used_external_agent": true,
+        "freshness": "live",
+        "session_as_of": null,
+        "unresolved_refs": []
+      },
+      {
+        "entity_id": "person:choi",
+        "agent_label": "최민수 선임의 Agent",
+        "text": "호환 문제입니다. 레거시 SSO 게이트웨이가 세션 식별자를 downstream 으로 전파하지 않아 바인딩 자체가 불가능했습니다.",
+        "confidence": 0.624,
+        "citations": [
+          {
+            "ref": "REVIEW_B",
+            "display_title": "SDK v3.2 인증 설계 리뷰",
+            "section": "§2.1",
+            "tier": "internal",
+            "as_of": "2025-12-03",
+            "formality": "official"
+          }
+        ],
+        "tier": "internal",
+        "used_external_agent": true,
+        "freshness": "stale",
+        "session_as_of": "2026-08-19T12:30:00+09:00",
+        "unresolved_refs": []
+      }
+    ],
+    "divergent": true,
+    "divergence_note": "둘 다 사실일 수 있습니다. 시점이 한 달 차이이고 문서 성격이 다릅니다.",
+    "disposition": "unverified"
+  },
+  "escalations": [],
+  "elapsed_seconds": 13.8,
+  "interrupts_avoided": 0,
+  "minutes_saved_estimate": 0
+}

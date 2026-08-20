@@ -1,0 +1,23 @@
+2026-08-19 14:02:11 INFO  atlas_ml.train    start config=configs/v3.yaml
+2026-08-19 14:02:11 INFO  atlas_ml.train    device=cuda:0 name=NVIDIA A100-SXM4-40GB
+2026-08-19 14:02:12 INFO  atlas_ml.io       loading data/preproc_v3/
+2026-08-19 14:02:34 INFO  atlas_ml.io       loaded rows=420135 cols=87
+2026-08-19 14:02:34 INFO  atlas_ml.train    label distribution: {0: 388721, 1: 31414}
+2026-08-19 14:02:34 INFO  atlas_ml.sampling applied RandomOverSampler(sampling_strategy=0.5, random_state=42)
+2026-08-19 14:02:41 INFO  atlas_ml.sampling resampled rows=583081 label={0: 388721, 1: 194360}
+2026-08-19 14:02:41 INFO  atlas_ml.train    class_weight=balanced_subsample
+2026-08-19 14:02:41 INFO  atlas_ml.train    split train=466464 valid=116617
+2026-08-19 14:02:42 INFO  atlas_ml.train    model=gradient_boosting n_estimators=400 max_depth=6 lr=0.05
+2026-08-19 14:05:18 INFO  atlas_ml.train    [round  25] train_auc=0.8412 valid_auc=0.8298 valid_recall=0.6104
+2026-08-19 14:08:02 INFO  atlas_ml.train    [round  50] train_auc=0.8791 valid_auc=0.8603 valid_recall=0.6702
+2026-08-19 14:10:47 INFO  atlas_ml.train    [round  75] train_auc=0.8975 valid_auc=0.8741 valid_recall=0.7011
+2026-08-19 14:13:31 INFO  atlas_ml.train    [round 100] train_auc=0.9088 valid_auc=0.8812 valid_recall=0.7188
+2026-08-19 14:16:14 INFO  atlas_ml.train    [round 125] train_auc=0.9166 valid_auc=0.8857 valid_recall=0.7291
+2026-08-19 14:18:58 INFO  atlas_ml.train    [round 150] train_auc=0.9228 valid_auc=0.8884 valid_recall=0.7362
+2026-08-19 14:21:42 INFO  atlas_ml.train    [round 175] train_auc=0.9279 valid_auc=0.8901 valid_recall=0.7408
+2026-08-19 14:24:25 INFO  atlas_ml.train    [round 200] train_auc=0.9324 valid_auc=0.8913 valid_recall=0.7441
+2026-08-19 14:27:09 INFO  atlas_ml.train    [round 225] train_auc=0.9363 valid_auc=0.8919 valid_recall=0.7463
+2026-08-19 14:29:52 INFO  atlas_ml.train    [round 250] train_auc=0.9398 valid_auc=0.8922 valid_recall=0.7477
+2026-08-19 14:32:36 INFO  atlas_ml.train    [round 275] train_auc=0.9430 valid_auc=0.8923 valid_recall=0.7484
+2026-08-19 14:33:04 INFO  atlas_ml.train    checkpoint saved runs/2026-08-19/ckpt-275.pt
+2026-08-19 14:33:04 INFO  atlas_ml.train    eta=2026-08-19T17:10 remaining_rounds=125

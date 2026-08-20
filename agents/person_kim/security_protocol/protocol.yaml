@@ -1,0 +1,18 @@
+level: personal
+owner: person:kim
+description: 김철수 책임 개인 보안 프로토콜 — 고객사 협의 담당.
+updated_at: '2026-08-20T17:13:32.391325'
+secret_keywords:
+- H사 요구사항
+- 계약 조건
+secret_patterns: []
+secret_directories:
+- corpus/customer-H/**
+secret_extensions: []
+secret_content_patterns: []
+internal_keywords: []
+internal_directories: []
+internal_extensions: []
+open_directories: []
+exaone_context_hints:
+- 이 사용자는 고객사 협의 담당입니다. 고객사 관련 내용은 모두 기밀로 처리하세요.

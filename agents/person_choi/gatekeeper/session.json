@@ -1,0 +1,15 @@
+{
+  "entity_id": "person:choi",
+  "updated_at": "2026-08-19T12:30:00+09:00",
+  "focus": "SDK v3.2 배포 준비",
+  "summary": "SDK v3.2 릴리스 파이프라인 점검 중. 레거시 SSO 통합 테스트 2건 미해결",
+  "open_paths": [
+    "person_choi/data/docs/release-checklist.md",
+    "person_choi/data/docs/auth-review.md"
+  ],
+  "recent_edits": [
+    { "path": "person_choi/data/docs/release-checklist.md", "at": "2026-08-19T12:28:00+09:00" }
+  ],
+  "recent_runs": [],
+  "datasets": []
+}

@@ -360,7 +360,7 @@ async def test_prepare_two_targets_runs_in_parallel(wiring):
 
 async def test_one_target_failing_does_not_kill_the_other(wiring, full_data_root):
     """2명 중 1명 실패 시 나머지는 반환한다 (R-02)."""
-    (full_data_root / "sessions" / "person_choi.json").unlink()
+    (full_data_root / "person_choi" / "gatekeeper" / "session.json").unlink()
     result = await wiring.orchestrator.prepare(ask(("person:kim", "person:choi")))
     assert len(result.calls) == 2
     kim, choi = result.calls

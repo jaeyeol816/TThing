@@ -1,0 +1,31 @@
+{
+  "entity_id": "person:park",
+  "updated_at": "2026-08-19T14:33:05+09:00",
+  "focus": "atlas-ml 전처리 v3 재학습",
+  "summary": "고객 로그 파생 데이터셋 v3로 재학습 중. 라벨 불균형 처리 방식을 조정함",
+  "open_paths": [
+    "person_park/data/scripts/preprocess_v3.py",
+    "person_park/data/configs/v3.yaml"
+  ],
+  "recent_edits": [
+    { "path": "person_park/data/scripts/preprocess_v3.py", "at": "2026-08-19T13:47:00+09:00" }
+  ],
+  "recent_runs": [
+    {
+      "cmd": "python train.py --config configs/v3.yaml",
+      "started_at": "2026-08-19T14:02:00+09:00",
+      "status": "running",
+      "eta": "2026-08-19T17:10:00+09:00",
+      "gpu": "cuda:0",
+      "log": "person_park/data/runs/2026-08-19/train.log"
+    }
+  ],
+  "datasets": [
+    {
+      "path": "person_park/data/preproc_v3/",
+      "rows": 420135,
+      "derived_from": "customer-H session logs",
+      "tier": "secret"
+    }
+  ]
+}

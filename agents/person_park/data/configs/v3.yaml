@@ -1,0 +1,42 @@
+# title: 전처리 v3 설정
+# 보안등급: 사내
+# as_of: 2026-08-19
+# formality: official
+# owner: person:park
+
+input_path: data/raw/session_logs/
+output_path: data/preproc_v3/
+
+# ── 라벨 불균형 ──────────────────────────────────────────────
+# 2단계 처리. 1단계는 여기, 2단계는 학습 시 class_weight.
+# 1:1 로 맞추지 않는 이유는 preprocess_v3.py 의 build_sampler docstring 참조.
+sampling_strategy: 0.5
+random_state: 42
+class_weight: balanced_subsample
+
+# ── 결측 처리 ────────────────────────────────────────────────
+impute_group: [region_code, device_class]
+
+# ── 파생 피처 ────────────────────────────────────────────────
+derived_features:
+  - name: session_duration_bucket
+    source: session_duration_sec
+    kind: quantile_bucket
+    bins: 8
+  - name: retry_ratio
+    source: [retry_count, request_count]
+    kind: ratio
+  - name: hour_of_day
+    source: event_ts
+    kind: hour
+
+# ── 학습 ─────────────────────────────────────────────────────
+model: gradient_boosting
+n_estimators: 400
+max_depth: 6
+learning_rate: 0.05
+early_stopping_rounds: 30
+eval_metric: [auc, recall]
+
+gpu: cuda:0
+batch_size: 512

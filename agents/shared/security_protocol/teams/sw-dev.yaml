@@ -1,0 +1,25 @@
+level: team
+owner: sw-dev
+description: 소프트웨어 개발팀 보안 프로토콜.
+updated_at: '2026-08-20T17:13:32.388319'
+secret_keywords: []
+secret_patterns:
+- SRS-\d+
+- SWE-\d+
+secret_directories:
+- corpus/*/docs/srs/**
+secret_extensions:
+- .srs
+secret_content_patterns: []
+internal_keywords:
+- atlas-ml
+- atlas-auth
+- Nova-gateway
+internal_directories:
+- corpus/*/scripts/**
+- corpus/*/configs/**
+internal_extensions: []
+open_directories: []
+exaone_context_hints:
+- SW 개발팀은 SDK 인증 모듈과 데이터 파이프라인을 담당합니다.
+- SRS 문서는 기밀입니다.

@@ -32,9 +32,8 @@ agents:
       - 성능 수치를 묻는 질문에는 구조 요약에 해당 필드가 없으면
         추측하지 말고 confidence 를 낮게 보고하십시오.
     knowledge_scope:
-      - corpus/kim/**
-      - corpus/customer-H/**      # 협의 담당이므로 접근 범위에 포함
-      - corpus/public/**
+      - person_kim/data/**
+      - shared/data/public/**
     escalation_inbox: person:kim
     daily_limit: 50
     disclose:
@@ -54,8 +53,8 @@ agents:
       - "지금 실행해도 되는가" 같은 허락은 당신이 판단할 수 없습니다.
         사실(현재 실행 상태, GPU 점유)만 보고하고 confidence 를 낮게 두십시오.
     knowledge_scope:
-      - corpus/park/**
-      - corpus/public/**
+      - person_park/data/**
+      - shared/data/public/**
     escalation_inbox: person:park
     daily_limit: 50
     disclose:
@@ -74,8 +73,8 @@ agents:
       - 설계 결정을 물으면 리뷰에서 직접 확인한 것과 전해 들은 것을 구분하십시오.
       - 근거 문서의 시점과 공식/비공식 여부가 판단에 중요합니다.
     knowledge_scope:
-      - corpus/choi/**
-      - corpus/public/**
+      - person_choi/data/**
+      - shared/data/public/**
     escalation_inbox: person:choi
     daily_limit: 50
     disclose:

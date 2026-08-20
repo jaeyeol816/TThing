@@ -51,8 +51,11 @@ from mesh.api_models import (
     ErrorResponse,
     HealthStatus,
     InboxItem,
+    MergedRulesView,
     PrepareResult,
     PresetQuestion,
+    ProtocolUpsertRequest,
+    ProtocolView,
     ResolveRequest,
     SendRequest,
     UploadRequest,
@@ -546,6 +549,89 @@ def _install_routes(app: FastAPI) -> None:
             demo_now_override=cfg.demo_now,
             envelope_cache_size=len(svc.gatekeeper.cache),
             disposition_counts=svc.audit.disposition_counts(),
+        )
+
+    # ── 보안 프로토콜 CRUD ───────────────────────────────────────────
+
+    def _protocol_to_view(p: object) -> ProtocolView:
+        from mesh.protocol_schemas import SecurityProtocol as SP
+        assert isinstance(p, SP)
+        return ProtocolView(
+            level=p.level,
+            owner=p.owner,
+            description=p.description,
+            updated_at=p.updated_at.isoformat() if p.updated_at else "",
+            secret_keywords=p.secret_keywords,
+            secret_patterns=p.secret_patterns,
+            secret_directories=p.secret_directories,
+            secret_extensions=p.secret_extensions,
+            secret_content_patterns=p.secret_content_patterns,
+            internal_keywords=p.internal_keywords,
+            internal_directories=p.internal_directories,
+            internal_extensions=p.internal_extensions,
+            open_directories=p.open_directories,
+            exaone_context_hints=p.exaone_context_hints,
+        )
+
+    @app.get("/api/protocols", response_model=list[ProtocolView])
+    async def list_protocols(request: Request) -> list[ProtocolView]:
+        """저장된 모든 보안 프로토콜 목록."""
+        store = _services(request).data.protocol_store
+        return [_protocol_to_view(p) for p in store.list_all()]
+
+    @app.get("/api/protocols/{level}/{owner}", response_model=ProtocolView)
+    async def get_protocol(request: Request, level: str, owner: str) -> ProtocolView:
+        store = _services(request).data.protocol_store
+        from mesh.protocol_schemas import ProtocolLevel
+        p = store.get(level, owner)  # type: ignore[arg-type]
+        if p is None:
+            raise HTTPException(status_code=404, detail="프로토콜이 없습니다")
+        return _protocol_to_view(p)
+
+    @app.post("/api/protocols", response_model=ProtocolView)
+    async def upsert_protocol(request: Request, body: ProtocolUpsertRequest) -> ProtocolView:
+        """프로토콜 생성 또는 수정. 저장 즉시 분류 규칙에 반영된다."""
+        from mesh.protocol_schemas import SecurityProtocol as SP
+        store = _services(request).data.protocol_store
+        p = SP(
+            level=body.level,
+            owner=body.owner,
+            description=body.description,
+            secret_keywords=body.secret_keywords,
+            secret_patterns=body.secret_patterns,
+            secret_directories=body.secret_directories,
+            secret_extensions=body.secret_extensions,
+            secret_content_patterns=body.secret_content_patterns,
+            internal_keywords=body.internal_keywords,
+            internal_directories=body.internal_directories,
+            internal_extensions=body.internal_extensions,
+            open_directories=body.open_directories,
+            exaone_context_hints=body.exaone_context_hints,
+        )
+        store.save(p)
+        return _protocol_to_view(p)
+
+    @app.delete("/api/protocols/{level}/{owner}")
+    async def delete_protocol(request: Request, level: str, owner: str) -> dict[str, bool]:
+        store = _services(request).data.protocol_store
+        deleted = store.delete(level, owner)  # type: ignore[arg-type]
+        if not deleted:
+            raise HTTPException(status_code=404, detail="프로토콜이 없습니다")
+        return {"deleted": True}
+
+    @app.get("/api/protocols-merged", response_model=MergedRulesView)
+    async def merged_rules_preview(request: Request) -> MergedRulesView:
+        """현재 적용 중인 머지 규칙 미리보기. 프로토콜 UI 실시간 확인용."""
+        data = _services(request).data
+        rules = data.rules
+        protocols = data.protocol_store.list_all()
+        return MergedRulesView(
+            secret_keywords=list(rules.banned.literals),
+            secret_patterns=list(rules.banned.patterns),
+            secret_path_globs=list(rules.secret_path_globs),
+            open_path_globs=list(rules.open_path_globs),
+            internal_path_globs=list(rules.internal_path_globs),
+            protocol_count=len(protocols),
         )
 
 

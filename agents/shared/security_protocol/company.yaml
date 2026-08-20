@@ -1,0 +1,42 @@
+level: company
+owner: all
+description: 전사 공통 보안 프로토콜 — 모든 구성원에게 적용됩니다.
+updated_at: '2026-08-20T17:13:32.384782'
+secret_keywords:
+- H社
+- H사
+- 고객사 H
+- Customer H
+- HanaTel
+- 하나텔
+- 하나텔레콤
+- EAP-AKA
+secret_patterns:
+- REQ-\d{4}
+- CTR-\d{6}
+- SKU-[A-Z]{2}\d{4}
+- \bPO-\d{5,}\b
+- \d+\s*억\s*원?
+- \d+\s*천만\s*원?
+- \d{1,3}(?:,\d{3})+\s*원
+- USD\s*[\d,]{4,}
+- \$\s?[\d,]{4,}
+secret_directories:
+- corpus/customer-*/**
+- '**/benchmark/**'
+secret_extensions:
+- .curs
+- .contract
+- .nda
+secret_content_patterns: []
+internal_keywords: []
+internal_directories:
+- corpus/**
+internal_extensions: []
+open_directories:
+- corpus/public/**
+exaone_context_hints:
+- 이 회사는 자동차 소프트웨어 B2B 기업입니다.
+- CURS(고객 요구사항 명세서)는 항상 기밀입니다.
+- 고객사명, 계약번호, 금액이 포함된 문서는 반드시 SECRET으로 분류하세요.
+- A-SPICE 프로세스 기반으로 개발을 진행합니다.

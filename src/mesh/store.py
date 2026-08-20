@@ -111,7 +111,8 @@ SOURCE_PATTERNS: tuple[tuple[str, SourceKind, Formality], ...] = (
     ("*/configs/*", "config", "official"),
     ("*/runs/*", "run_log", "official"),
     ("*/benchmark/*", "benchmark", "official"),
-    ("corpus/customer-*/*", "spec", "official"),
+    ("corpus/customer-*/*", "spec", "official"),    # 구 경로 하위 호환
+    ("*/data/customer-*/*", "spec", "official"),    # 새 경로
 )
 
 DEFAULT_SOURCE: tuple[SourceKind, Formality] = ("design_doc", "official")
@@ -328,11 +329,11 @@ class KnowledgeStore:
     # ── 세션 로드 (Day 1) ────────────────────────────────────────────
 
     def session_path(self, entity_id: str) -> Path:
-        """`person:kim` -> `data/sessions/person_kim.json`."""
-        return self.cfg.sessions_root / f"{entity_id.replace(':', '_')}.json"
+        """`person:kim` -> `agents/person_kim/gatekeeper/session.json`."""
+        return self.cfg.agent_session_path(entity_id)
 
     def verified_path(self, entity_id: str) -> Path:
-        return self.cfg.verified_root / f"{entity_id.replace(':', '_')}.json"
+        return self.cfg.agent_verified_path(entity_id)
 
     def load_session(self, entity_id: str) -> Session:
         """세션 JSON + 승인된 QA 병합.
@@ -638,15 +639,8 @@ class KnowledgeStore:
     # ── 업로드 (Day 4) ───────────────────────────────────────────────
 
     def uploads_dir(self, entity_id: str) -> Path:
-        """`corpus/{사람}/uploads/`.
-
-        이 경로가 `knowledge_scope` 안에 들어오는 것이 중요하다 —
-        `corpus/kim/**` 이 `corpus/kim/uploads/**` 를 덮는다. 밖에 두면
-        업로드한 문서를 자기 Agent 도 읽지 못한다.
-        """
-        return (
-            self.cfg.corpus_root / entity_id.replace(":", "_").removeprefix("person_") / "uploads"
-        )
+        """`agents/{entity_id}/data/uploads/`."""
+        return self.cfg.agent_uploads_dir(entity_id)
 
     def save_upload(self, entity_id: str, filename: str, content: str) -> tuple[str, Path]:
         """업로드 저장. `(상대 경로, 절대 경로)` 를 반환한다.
@@ -872,3 +866,115 @@ class KnowledgeStore:
 
     def _limit_reached(self, entity_id: str, daily_limit: int) -> bool:
         return self._question_count(entity_id) >= daily_limit
+
+    # ── 지식 갱신 (Knowledge Miss → Search → Save) ───────────────────
+
+    async def kb_search_and_save(
+        self,
+        entity_id: str,
+        question: str,
+        *,
+        max_chars: int = 3000,
+    ) -> Chunk | None:
+        """세션에 관련 근거가 없을 때 EXAONE 으로 답변을 생성하고
+        agents/{id}/data/kb/ 에 .md 로 저장한 뒤 세션에 등록한다.
+
+        흐름:
+          1. EXAONE 에게 질문 + "공개 정보만 사용" 제약을 주고 답변 생성
+          2. Gatekeeper 로 등급 판정 (SECRET 이면 저장 안 함)
+          3. agents/{id}/data/kb/{slug}.md 저장
+          4. session.json open_paths 에 등록 → 다음 쿼리부터 후보가 됨
+          5. Chunk 반환 → orchestrator 가 바로 사용
+
+        ⚠️ EXAONE 이 생성한 내용은 "공개 정보 기반 요약"이므로 원문 유출이
+           아니다. 하지만 Gatekeeper 등급 판정을 반드시 거친다.
+
+        Returns:
+            생성·저장된 Chunk. EXAONE 실패 또는 SECRET 판정 시 None.
+        """
+        if self.exaone is None:
+            log.warning("EXAONE 없음 — 지식 갱신 불가", extra=log_extra(entity_id=entity_id))
+            return None
+
+        # ① EXAONE 으로 공개 정보 기반 답변 생성
+        system = (
+            "You are a helpful internal knowledge assistant.\n"
+            "Answer the question using only publicly available information "
+            "(standards, RFCs, open documentation). "
+            "Do NOT include any customer names, contract numbers, pricing, or "
+            "confidential internal data. "
+            "Write in Korean. Keep the answer concise (under 500 words). "
+            "Format: plain text with optional markdown headers."
+        )
+        try:
+            content = await self.exaone.complete_text(
+                system,
+                f"QUESTION:\n{question}",
+                name="kb_search",
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("EXAONE 지식 검색 실패", extra=log_extra(reason=str(e)))
+            return None
+
+        if not content or not content.strip():
+            return None
+
+        # ② 등급 판정 — 생성된 내용도 검사한다
+        if self.gatekeeper is not None:
+            try:
+                decision = await self.gatekeeper.classify(content)
+                if decision.tier.value == "secret":
+                    log.warning(
+                        "EXAONE 생성 내용이 SECRET 판정 — 저장 거부",
+                        extra=log_extra(entity_id=entity_id, reasons=decision.reasons),
+                    )
+                    return None
+            except Exception as e:  # noqa: BLE001
+                log.warning("등급 판정 실패 — 저장 거부", extra=log_extra(reason=str(e)))
+                return None
+
+        # ③ 파일 저장: agents/{id}/data/kb/{slug}.md
+        import re
+        from datetime import datetime as _dt
+
+        kb_dir = self.cfg.agent_data_root(entity_id) / "kb"
+        kb_dir.mkdir(parents=True, exist_ok=True)
+
+        # 파일명: 질문에서 안전한 slug 생성
+        slug_base = re.sub(r"[^\w가-힣]+", "_", question.strip())[:40].strip("_")
+        timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"kb_{timestamp}_{slug_base}.md"
+        file_path = kb_dir / filename
+
+        md_content = (
+            f"# {question}\n\n"
+            f"> 생성일: {_dt.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"> 출처: EXAONE 공개 정보 기반 생성 (자동)\n\n"
+            f"{content.strip()}\n"
+        )
+        file_path.write_text(md_content, encoding="utf-8")
+
+        # ④ session.json open_paths 에 등록
+        rel = to_relative(file_path, self.cfg.data_root)
+        try:
+            self.attach_path(entity_id, rel)
+        except SessionNotFound:
+            log.warning("세션 없음 — open_paths 등록 건너뜀", extra=log_extra(entity_id=entity_id))
+
+        log.info(
+            "지식 갱신 완료",
+            extra=log_extra(entity_id=entity_id, path=rel, question_len=len(question)),
+        )
+
+        # ⑤ Chunk 반환
+        return Chunk(
+            chunk_id=chunk_id_for(rel),
+            entity_id=entity_id,
+            text=content[:max_chars],
+            tier=None,  # Gatekeeper 가 판정한다
+            display_title=f"KB: {question[:60]}",
+            internal_path=rel,
+            as_of=_dt.now().date(),
+            formality="official",
+            source_kind="note",
+        )

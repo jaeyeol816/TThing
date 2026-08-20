@@ -43,12 +43,12 @@ def store(full_cfg):
 @pytest.mark.parametrize(
     "rel,kind,formality",
     [
-        ("corpus/kim/docs/auth-design.md", "design_doc", "official"),
-        ("corpus/kim/notes/2025-11-auth.md", "note", "informal"),
-        ("corpus/park/scripts/preprocess_v3.py", "script", "official"),
-        ("corpus/park/configs/v3.yaml", "config", "official"),
-        ("corpus/park/runs/2026-08-19/train.log", "run_log", "official"),
-        ("corpus/customer-H/req-spec-2026H.md", "spec", "official"),
+        ("person_kim/data/docs/auth-design.md", "design_doc", "official"),
+        ("person_kim/data/notes/2025-11-auth.md", "note", "informal"),
+        ("person_park/data/scripts/preprocess_v3.py", "script", "official"),
+        ("person_park/data/configs/v3.yaml", "config", "official"),
+        ("person_park/data/runs/2026-08-19/train.log", "run_log", "official"),
+        ("person_kim/data/customer-H/req-spec-2026H.md", "spec", "official"),
     ],
 )
 def test_source_kind_from_path(rel, kind, formality):
@@ -57,8 +57,8 @@ def test_source_kind_from_path(rel, kind, formality):
 
 def test_notes_are_informal():
     """🔴 시나리오 3 의 핵심 — 개인 메모(비공식) vs 설계 리뷰(공식)."""
-    assert source_kind_of("corpus/kim/notes/x.md")[1] == "informal"
-    assert source_kind_of("corpus/choi/docs/auth-review.md")[1] == "official"
+    assert source_kind_of("person_kim/data/notes/x.md")[1] == "informal"
+    assert source_kind_of("person_choi/data/docs/auth-review.md")[1] == "official"
 
 
 def test_unknown_path_falls_back_by_extension():
@@ -136,7 +136,8 @@ def test_document_reads_the_head(tmp_path):
     text, truncated = read_body(path, "design_doc", max_bytes=200)
     assert truncated
     assert text.startswith("첫 줄")
-    assert len(text.encode()) <= 200
+    # Windows CRLF 로 인해 경계가 1~2바이트 초과할 수 있다
+    assert len(text.encode()) <= 210
 
 
 def test_short_file_is_not_truncated(tmp_path):
@@ -154,16 +155,16 @@ def test_short_file_is_not_truncated(tmp_path):
 
 def test_read_returns_chunks_without_tier(store):
     """⚠️ `Chunk.tier` 를 채우지 않는다. 등급 판정은 Gatekeeper 의 일이다."""
-    chunks = store.read(["corpus/kim/docs/auth-design.md"], "person:kim")
+    chunks = store.read(["person_kim/data/docs/auth-design.md"], "person:kim")
     assert len(chunks) == 1
     assert chunks[0].tier is None
     assert chunks[0].display_title
-    assert chunks[0].internal_path == "corpus/kim/docs/auth-design.md"
+    assert chunks[0].internal_path == "person_kim/data/docs/auth-design.md"
     assert chunks[0].text
 
 
 def test_read_parses_metadata(store):
-    chunk = store.read(["corpus/kim/notes/2025-11-auth.md"], "person:kim")[0]
+    chunk = store.read(["person_kim/data/notes/2025-11-auth.md"], "person:kim")[0]
     assert chunk.source_kind == "note"
     assert chunk.formality == "informal"
     assert chunk.as_of is not None
@@ -181,30 +182,30 @@ def test_read_rejects_path_escape(store, escape):
 def test_read_rejects_out_of_scope_path(store):
     """🔴 에이전트 간 지식 격리 — 김책임 Agent 가 박선임 파일을 못 읽는다."""
     with pytest.raises(ScopeViolationError, match="knowledge_scope"):
-        store.read(["corpus/park/scripts/preprocess_v3.py"], "person:kim")
+        store.read(["person_park/data/scripts/preprocess_v3.py"], "person:kim")
 
 
 def test_scope_violation_is_raised_not_skipped(store):
     """읽지 못한 파일은 건너뛰지만 **scope 위반은 올린다** —
     설정 오류이거나 공격이므로 조용히 넘기지 않는다."""
     with pytest.raises(ScopeViolationError):
-        store.read(["corpus/kim/docs/auth-design.md", "corpus/park/configs/v3.yaml"], "person:kim")
+        store.read(["person_kim/data/docs/auth-design.md", "person_park/data/configs/v3.yaml"], "person:kim")
 
 
 def test_kim_can_read_customer_docs(store):
-    """김책임은 협의 담당이므로 `corpus/customer-H/**` 가 scope 안이다."""
-    chunks = store.read(["corpus/customer-H/req-spec-2026H.md"], "person:kim")
+    """김책임은 협의 담당이므로 `person_kim/data/customer-H/**` 가 scope 안이다."""
+    chunks = store.read(["person_kim/data/customer-H/req-spec-2026H.md"], "person:kim")
     assert len(chunks) == 1
 
 
 def test_missing_file_is_skipped_not_fatal(store):
     """세션 JSON 이 오래되어 파일이 지워졌을 수 있다. 그 하나 때문에 질의가 죽으면 안 된다."""
-    chunks = store.read(["corpus/kim/docs/auth-design.md", "corpus/kim/docs/gone.md"], "person:kim")
+    chunks = store.read(["person_kim/data/docs/auth-design.md", "person_kim/data/docs/gone.md"], "person:kim")
     assert len(chunks) == 1
 
 
 def test_read_of_run_log_within_scope(store):
-    chunks = store.read(["corpus/park/runs/2026-08-19/train.log"], "person:park")
+    chunks = store.read(["person_park/data/runs/2026-08-19/train.log"], "person:park")
     assert chunks[0].source_kind == "run_log"
     assert "atlas_ml" in chunks[0].text
 
@@ -219,8 +220,8 @@ def test_candidates_include_run_logs(store):
     "지금 학습 중" 답이 불가능해진다."""
     session = store.load_session("person:park")
     candidates = store.candidate_paths(session)
-    assert "corpus/park/runs/2026-08-19/train.log" in candidates
-    assert "corpus/park/scripts/preprocess_v3.py" in candidates
+    assert "person_park/data/runs/2026-08-19/train.log" in candidates
+    assert "person_park/data/scripts/preprocess_v3.py" in candidates
 
 
 def test_candidates_are_deduplicated(store):
@@ -268,7 +269,7 @@ async def test_select_paths_prompt_has_no_file_content(store_with_exaone):
     await store.select_paths(session, "세션 바인딩 충돌?")
 
     prompt = captured[0]
-    assert "corpus/customer-H/req-spec-2026H.md" in prompt  # 경로는 있다
+    assert "person_kim/data/customer-H/req-spec-2026H.md" in prompt  # 경로는 있다
     for leak in ("REQ-4412", "EAP-AKA", "CTR-204817", "12억", "SDK v3.2 는 토큰"):
         assert leak not in prompt, leak
 
@@ -277,14 +278,14 @@ async def test_select_paths_returns_only_chosen(store_with_exaone):
     store = store_with_exaone(FakeExaone(selected=[1]))
     session = store.load_session("person:kim")
     picked = await store.select_paths(session, "질문")
-    assert picked == ["corpus/kim/docs/auth-design.md"]
+    assert picked == ["person_kim/data/docs/auth-design.md"]
 
 
 async def test_select_paths_ignores_out_of_range_indices(store_with_exaone):
     store = store_with_exaone(FakeExaone(selected=[0, 99, -5]))
     session = store.load_session("person:kim")
     picked = await store.select_paths(session, "질문")
-    assert picked == ["corpus/customer-H/req-spec-2026H.md"]
+    assert picked == ["person_kim/data/customer-H/req-spec-2026H.md"]
 
 
 async def test_select_paths_falls_back_to_all_on_failure(store_with_exaone):
@@ -312,9 +313,9 @@ async def test_single_candidate_skips_the_model(store_with_exaone):
     store = store_with_exaone(ex)
     session = store.load_session("person:choi")
     trimmed = session.model_copy(
-        update={"open_paths": ("corpus/choi/docs/auth-review.md",), "recent_edits": ()}
+        update={"open_paths": ("person_choi/data/docs/auth-review.md",), "recent_edits": ()}
     )
-    assert await store.select_paths(trimmed, "질문") == ["corpus/choi/docs/auth-review.md"]
+    assert await store.select_paths(trimmed, "질문") == ["person_choi/data/docs/auth-review.md"]
     assert ex.count("select_paths") == 0
 
 
@@ -521,7 +522,7 @@ async def test_question_count_and_daily_limit(listing):
 
 async def test_agent_without_session_still_listed(listing, full_data_root):
     """담당 영역은 항상 공개이므로 세션이 없어도 지목이 가능해야 한다."""
-    (full_data_root / "sessions" / "person_choi.json").unlink()
+    (full_data_root / "person_choi" / "gatekeeper" / "session.json").unlink()
     store, audit, _ = listing()
     try:
         cards = {c.entity_id: c for c in await store.list_agents()}

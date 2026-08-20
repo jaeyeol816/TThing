@@ -37,7 +37,7 @@ DEMO_NOW = "2026-08-19T14:35:00+09:00"
 def store(monkeypatch, mock_env) -> KnowledgeStore:
     """실제 세션 3개와 agents.yaml 을 쓰는 스토어."""
     for name in ("person_kim.json", "person_park.json", "person_choi.json"):
-        (mock_env / "sessions" / name).write_bytes((REPO / "data" / "sessions" / name).read_bytes())
+        (mock_env / name.replace(".json","") / "gatekeeper" / "session.json").write_bytes((REPO / "agents" / name.replace(".json","") / "gatekeeper" / "session.json").read_bytes())
     monkeypatch.setenv("MESH_DEMO_NOW", DEMO_NOW)
     monkeypatch.chdir(REPO)  # config/agents.yaml 을 찾기 위해
     cfg = Config.load()
@@ -55,7 +55,7 @@ def test_loads_three_demo_sessions(store):
 
 
 def test_session_path_mapping(store):
-    assert store.session_path("person:kim").name == "person_kim.json"
+    assert store.session_path("person:kim").name == "session.json"
 
 
 def test_missing_session_raises(store):
@@ -64,7 +64,7 @@ def test_missing_session_raises(store):
 
 
 def test_entity_id_mismatch_raises(store, mock_env):
-    p = mock_env / "sessions" / "person_kim.json"
+    p = mock_env / "person_kim" / "gatekeeper" / "session.json"
     raw = json.loads(p.read_text(encoding="utf-8"))
     raw["entity_id"] = "person:someone_else"
     p.write_text(json.dumps(raw), encoding="utf-8")
@@ -75,7 +75,7 @@ def test_entity_id_mismatch_raises(store, mock_env):
 def test_kim_session_content(store):
     s = store.load_session("person:kim")
     assert "고객사 H" in s.focus
-    assert "corpus/customer-H/req-spec-2026H.md" in s.open_paths
+    assert "person_kim/data/customer-H/req-spec-2026H.md" in s.open_paths
     assert len(s.recent_edits) == 1
     assert s.recent_runs == ()
 
@@ -88,7 +88,7 @@ def test_park_session_has_running_job(store):
     assert run.status == "running"
     assert run.gpu == "cuda:0"
     assert run.eta == datetime.fromisoformat("2026-08-19T17:10:00+09:00")
-    assert run.log == "corpus/park/runs/2026-08-19/train.log"
+    assert run.log == "person_park/data/runs/2026-08-19/train.log"
 
 
 def test_park_dataset_inherits_secret_tier(store):
@@ -120,12 +120,12 @@ def test_session_open_paths_exist_in_real_corpus():
     `mock_env` 가 아니라 저장소의 `data/` 를 직접 본다.
     세션과 코퍼스는 함께 커밋되므로 정합성을 여기서 확인한다.
     """
-    real_data = REPO / "data"
+    real_data = REPO / "agents"
     missing: list[str] = []
     for name in ("person_kim.json", "person_park.json", "person_choi.json"):
-        raw = json.loads((real_data / "sessions" / name).read_text(encoding="utf-8"))
+        raw = json.loads((real_data / name.replace(".json","") / "gatekeeper" / "session.json").read_text(encoding="utf-8"))
         for rel in raw["open_paths"]:
-            if not (real_data / rel).exists():
+            if not (real_data / rel.replace("agents/","", 1) if rel.startswith("agents/") else real_data / rel).exists():
                 missing.append(f"{name}: {rel}")
         for edit in raw.get("recent_edits") or ():
             if not (real_data / edit["path"]).exists():
@@ -138,7 +138,7 @@ def test_session_open_paths_exist_in_real_corpus():
 
 def test_path_escape_in_session_is_rejected(store, mock_env):
     """세션 JSON 은 사람이 편집하므로 탈출 시도가 들어올 수 있다."""
-    p = mock_env / "sessions" / "person_kim.json"
+    p = mock_env / "person_kim" / "gatekeeper" / "session.json"
     raw = json.loads(p.read_text(encoding="utf-8"))
     raw["open_paths"] = ["../../../etc/passwd"]
     p.write_text(json.dumps(raw), encoding="utf-8")
@@ -160,7 +160,7 @@ def test_mtime_change_triggers_reload(store, mock_env):
     """시연 중 JSON 을 편집하면 즉시 반영된다."""
     first = store.load_session("person:kim")
 
-    p = mock_env / "sessions" / "person_kim.json"
+    p = mock_env / "person_kim" / "gatekeeper" / "session.json"
     raw = json.loads(p.read_text(encoding="utf-8"))
     raw["focus"] = "새로운 작업"
     p.write_text(json.dumps(raw), encoding="utf-8")
@@ -355,9 +355,9 @@ def test_append_invalidates_cache(store):
 def test_verified_file_is_separate_from_session(store, mock_env):
     """세션은 데몬이 덮어쓰는 휘발성 상태다. 승인 QA 를 세션 안에 넣으면 사라진다."""
     store.append_verified("person:park", _qa())
-    assert (mock_env / "verified" / "person_park.json").exists()
+    assert (mock_env / "person_park" / "gatekeeper" / "verified.json").exists()
     session_raw = json.loads(
-        (mock_env / "sessions" / "person_park.json").read_text(encoding="utf-8")
+        (mock_env / "person_park" / "gatekeeper" / "session.json").read_text(encoding="utf-8")
     )
     assert "verified_qa" not in session_raw
 
@@ -369,26 +369,26 @@ def test_verified_file_is_separate_from_session(store, mock_env):
 
 def test_kim_can_read_customer_docs(store):
     """협의 담당이므로 접근 범위에 포함된다."""
-    assert store.in_scope("corpus/customer-H/req-spec-2026H.md", "person:kim")
+    assert store.in_scope("person_kim/data/customer-H/req-spec-2026H.md", "person:kim")
 
 
 def test_park_cannot_read_customer_docs(store):
-    assert not store.in_scope("corpus/customer-H/req-spec-2026H.md", "person:park")
+    assert not store.in_scope("person_kim/data/customer-H/req-spec-2026H.md", "person:park")
 
 
 def test_kim_cannot_read_park_files(store):
-    assert not store.in_scope("corpus/park/scripts/preprocess_v3.py", "person:kim")
+    assert not store.in_scope("person_park/data/scripts/preprocess_v3.py", "person:kim")
 
 
 def test_everyone_can_read_public(store):
     for eid in ("person:kim", "person:park", "person:choi"):
-        assert store.in_scope("corpus/public/oauth-rfc-summary.md", eid)
+        assert store.in_scope("shared/data/public/oauth-rfc-summary.md", eid)
 
 
 def test_each_agent_can_read_own_files(store):
-    assert store.in_scope("corpus/kim/notes/2025-11-auth.md", "person:kim")
-    assert store.in_scope("corpus/park/configs/v3.yaml", "person:park")
-    assert store.in_scope("corpus/choi/docs/auth-review.md", "person:choi")
+    assert store.in_scope("person_kim/data/notes/2025-11-auth.md", "person:kim")
+    assert store.in_scope("person_park/data/configs/v3.yaml", "person:park")
+    assert store.in_scope("person_choi/data/docs/auth-review.md", "person:choi")
 
 
 # ══════════════════════════════════════════════════════════════════════

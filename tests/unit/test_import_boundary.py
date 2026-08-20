@@ -262,11 +262,9 @@ LAYERS: dict[str, int] = {
     "mesh.exceptions": 0,
     "mesh.config": 0,
     "mesh.schemas": 0,
+    "mesh.protocol_schemas": 0,  # 데이터 모델만 (의존 없음)
     "mesh.validator": 1,
     "mesh.rehydrator": 1,
-    # HTTP 타입 계약. `mesh.schemas` 만 참조하는 잎 모듈이므로 아래쪽에 둔다.
-    # (Day 1 에는 U3 소유라는 이유로 L5 에 뒀는데, 레이어는 소유가 아니라
-    #  의존 순서를 나타낸다. L5 에 두면 같은 레이어의 inbox 가 못 쓴다.)
     "mesh.api_models": 1,
     "mesh.llm": 1,
     "mesh.llm.fixtures": 1,
@@ -275,13 +273,13 @@ LAYERS: dict[str, int] = {
     "mesh.classifier": 3,
     "mesh.extractor": 3,
     "mesh.pseudonymizer": 3,
+    "mesh.protocol_store": 0,  # config에서 지연 import — config와 같은 층
     "mesh.gatekeeper": 4,
     "mesh.audit": 4,
     "mesh.store": 5,
     "mesh.agent": 5,
     "mesh.inbox": 5,
     "mesh.orchestrator": 6,
-    # 업로드 서비스. store(L5) + gatekeeper(L4) 를 조율하므로 orchestrator 와 같은 층이다.
     "mesh.documents": 6,
     "mesh.main": 7,
 }

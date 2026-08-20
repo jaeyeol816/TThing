@@ -1,0 +1,76 @@
+{
+  "request_id": "req_01JS1",
+  "calls": [
+    {
+      "envelope_id": "env_AAAAAAAAAAAAAAAAAAAAAA",
+      "target_entity_id": "person:kim",
+      "agent_label": "김철수 책임의 Agent",
+      "sub_question": null,
+      "tier": "secret",
+      "disposition": "ready",
+      "preview": {
+        "envelope_id": "env_AAAAAAAAAAAAAAAAAAAAAA",
+        "tier": "secret",
+        "representation": "structured",
+        "payload_pretty": "{\n  \"task\": \"constraint_conflict_check\",\n  \"domain\": \"authentication\",\n  \"entities\": [\n    {\n      \"ref\": \"REQ_A\",\n      \"role\": \"external_requirement\",\n      \"facts\": {\n        \"auth_mechanism_class\": \"challenge_response\",\n        \"session_binding\": \"required\",\n        \"credential_reuse_allowed\": false,\n        \"max_session_hours\": 8\n      }\n    },\n    {\n      \"ref\": \"COMP_B\",\n      \"role\": \"our_component\",\n      \"facts\": {\n        \"credential_lifetime_hours\": 24,\n        \"renewal_mode\": \"background_silent\",\n        \"session_binding\": \"none\"\n      }\n    }\n  ],\n  \"question_template\": \"conflict_and_mitigation\",\n  \"answer_format\": {\n    \"conflict\": \"bool\",\n    \"reason\": \"string\",\n    \"mitigations\": \"string[]\"\n  }\n}",
+        "size_bytes": 722,
+        "validation_summary": "6/6",
+        "checks": [
+          {
+            "stage": "schema",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "vocab",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "range",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "banned",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "ngram",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          },
+          {
+            "stage": "size",
+            "passed": true,
+            "detail": "",
+            "offending": []
+          }
+        ],
+        "excluded_categories": [
+          "고객사명",
+          "제품명",
+          "버전",
+          "요구사항 번호",
+          "원문 문장",
+          "담당자",
+          "일정",
+          "금액"
+        ],
+        "verbatim_sentence_count": 0
+      },
+      "fallback": null,
+      "blocked_reason": null
+    }
+  ],
+  "decomposed": false,
+  "upgraded_tier": "secret",
+  "upgrade_reason": "질문은 사내이나 동원된 파일 중 기밀이 있어 호출 전체를 기밀로 상향",
+  "agents_notified": false
+}

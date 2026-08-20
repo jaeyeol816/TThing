@@ -4,163 +4,208 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MIA; But AI got you</title>
-<!-- ⚠️ 인라인 script/style 이 없다. CSP 에 unsafe-inline 이 없으므로 동작하지 않는다.
-     외부 CDN 도 없다 (SRI 가 필요 없는 이유이자 오프라인 데모의 전제). -->
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
-<!-- ══════════════════════════════════════════════════════════════════
-     헤더 — 정직성 표시 (BR-U-09)
-     이 프로젝트가 무엇을 시뮬레이션하고 있는지 상시 노출한다.
-     숨기면 심사자를 속이는 것이고, 먼저 밝히는 것이 지적당하는 것보다 낫다.
-     ══════════════════════════════════════════════════════════════════ -->
-<header class="topbar">
-  <div class="brand">
-    <span class="logo" aria-hidden="true">◈</span>
-    <span class="brand-name">MIA<span class="brand-semi">;</span> But AI got you</span>
-    <span class="brand-sub">담당자가 자리에 없어도 답은 나온다</span>
-  </div>
+<div class="app-layout">
 
-  <div class="badges" id="health-badges" aria-live="polite">
-    <span class="badge badge-muted" data-testid="health-loading">상태 확인 중…</span>
-  </div>
+  <!-- ── 중앙: 채팅 영역 ─────────────────────────────────────────── -->
+  <main class="chat-area">
+    <header class="chat-header">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">&#9672;</span>
+        <span class="brand-name">MIA</span>
+        <span class="brand-sub">담당자가 자리에 없어도 답은 나온다</span>
+      </div>
+      <div class="header-badges" id="health-badges" aria-live="polite">
+        <span class="badge badge-muted">상태 확인 중…</span>
+      </div>
+      <button type="button" class="btn btn-sm protocol-btn" id="protocol-btn"
+              title="보안 프로토콜 관리">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        보안 프로토콜
+      </button>
+    </header>
 
-  <div class="whoami">
-    <label class="whoami-label" for="user-select">보는 사람</label>
-    <select id="user-select" data-testid="user-select" aria-describedby="whoami-note"></select>
-    <span class="whoami-note" id="whoami-note">데모용 전환 · 인증 없음</span>
-  </div>
-</header>
+    <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
+    </div>
 
-<!-- 경계 시뮬레이션 설명. 배지를 누르면 펼친다. -->
-<aside class="notice" id="trust-boundary-notice" data-testid="trust-boundary-notice" hidden>
-  <h2>신뢰 경계가 시뮬레이션입니다</h2>
-  <p>
-    원문을 보는 모델(<code id="tz-url">…</code>)이 지금은 사외 SaaS 엔드포인트입니다.
-    이 아키텍처가 보장하는 것은 <strong>원문이 이 엔드포인트 하나에만 전달된다</strong>는
-    것이고, 사내망으로 옮기는 것은 이 설정값만 바꾸면 됩니다.
-  </p>
-  <p>
-    경계를 넘는 것은 모두 감사 로그에 남습니다. <em>감사</em> 탭에서 원문 문구로
-    검색해 0건임을 직접 확인할 수 있습니다.
-  </p>
-  <button type="button" class="btn btn-ghost" id="notice-close">닫기</button>
-</aside>
-
-<!-- ══════════════════════════════════════════════════════════════════ -->
-<nav class="tabs" role="tablist" aria-label="화면">
-  <button type="button" role="tab" id="tab-ask"  data-tab="ask"  data-testid="tab-ask"  aria-selected="true"  aria-controls="panel-ask">질문하기</button>
-  <button type="button" role="tab" id="tab-docs" data-tab="docs" data-testid="tab-docs" aria-selected="false" aria-controls="panel-docs">내 문서</button>
-  <button type="button" role="tab" id="tab-inbox" data-tab="inbox" data-testid="tab-inbox" aria-selected="false" aria-controls="panel-inbox">인박스<span class="count" id="inbox-count" hidden></span></button>
-  <button type="button" role="tab" id="tab-audit" data-tab="audit" data-testid="tab-audit" aria-selected="false" aria-controls="panel-audit">감사 로그</button>
-</nav>
-
-<main>
-  <!-- ── 질문하기 ────────────────────────────────────────────────── -->
-  <section id="panel-ask" role="tabpanel" aria-labelledby="tab-ask" tabindex="0">
-    <h2 class="section-title">누구에게 물을까요</h2>
-    <p class="hint">
-      지목은 사람이 합니다. 시스템이 전문성을 추정해 배정하지 않습니다 —
-      최대 2명까지 고를 수 있습니다.
-    </p>
-    <ul class="agent-grid" id="agent-grid" data-testid="agent-grid"></ul>
-
-    <h2 class="section-title">무엇을 물을까요</h2>
-    <div class="ask-box">
-      <label class="sr-only" for="preset-select">데모 질문 프리셋</label>
-      <select id="preset-select" data-testid="preset-select"></select>
-      <label class="sr-only" for="question-input">질문</label>
-      <textarea id="question-input" data-testid="question-input" rows="4"
-                placeholder="예) 고객사 요구사항과 우리 SDK 토큰 갱신 방식이 충돌하나요?"></textarea>
-      <div class="ask-actions">
-        <span class="counter" id="char-counter">0 / 4000</span>
-        <button type="button" class="btn btn-primary" id="ask-button" data-testid="ask-button" disabled>
-          미리보기 만들기
+    <div class="chat-input-area">
+      <div class="input-wrapper">
+        <label class="sr-only" for="message-input">메시지 입력</label>
+        <textarea id="message-input" rows="1" placeholder="메시지를 입력하세요..."
+                  data-testid="message-input"></textarea>
+        <button type="button" class="send-btn" id="send-btn" data-testid="send-btn" disabled
+                aria-label="전송">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13"/>
+          </svg>
         </button>
       </div>
-      <p class="hint hint-tight">
-        먼저 <strong>무엇이 나갈지</strong> 보여드립니다. 이 단계에서는 상대에게 알림이 가지 않습니다.
-      </p>
+      <p class="input-hint">Enter 전송 · Shift+Enter 줄바꿈</p>
+    </div>
+  </main>
+
+  <!-- ── 우측: 조직도 패널 ───────────────────────────────────────── -->
+  <aside class="org-panel">
+    <div class="org-header">
+      <h2 class="org-title">조직도</h2>
+      <span class="org-subtitle">질문할 대상을 선택하세요</span>
     </div>
 
-    <div id="status-line" class="status" aria-live="polite"></div>
-    <div id="answers" data-testid="answers"></div>
-  </section>
-
-  <!-- ── 내 문서 ─────────────────────────────────────────────────── -->
-  <section id="panel-docs" role="tabpanel" aria-labelledby="tab-docs" tabindex="0" hidden>
-    <h2 class="section-title">문서 올리기</h2>
-    <p class="hint">
-      올리는 즉시 보안 등급을 판정하고 <strong>그 근거</strong>를 보여드립니다.
-      파일은 이 컴퓨터의 데이터 폴더에만 저장되며 경계를 넘지 않습니다.
-    </p>
-
-    <div class="dropzone" id="dropzone" data-testid="dropzone" tabindex="0" role="button"
-         aria-describedby="dropzone-hint">
-      <span class="dz-icon" aria-hidden="true">⇪</span>
-      <span class="dz-main">파일을 끌어다 놓거나 클릭해서 선택</span>
-      <span class="dz-sub" id="dropzone-hint">텍스트 문서만 (.md .txt .py .yaml .json .log .csv .sql .sh)</span>
-      <input type="file" id="file-input" data-testid="file-input" multiple hidden
-             accept=".md,.txt,.py,.yaml,.yml,.json,.log,.csv,.sql,.sh,.toml,.ini,.cfg">
+    <div class="org-list" id="org-list" data-testid="org-list">
+      <!-- JS가 채운다 -->
     </div>
 
-    <details class="paste-box">
-      <summary>또는 붙여넣기로 만들기</summary>
-      <label class="field">
-        <span>파일명</span>
-        <input type="text" id="paste-name" data-testid="paste-name" placeholder="req-spec-2026H.md">
-      </label>
-      <label class="field">
-        <span>내용</span>
-        <textarea id="paste-body" data-testid="paste-body" rows="8"
-                  placeholder="보안등급: 기밀&#10;&#10;계약 금액은 12억원이다…"></textarea>
-      </label>
-      <button type="button" class="btn btn-primary" id="paste-submit" data-testid="paste-submit">올리기</button>
-    </details>
-
-    <div id="upload-result" data-testid="upload-result" aria-live="polite"></div>
-
-    <h2 class="section-title">내 문서 목록</h2>
-    <p class="hint">
-      <em>질의 후보</em>인 문서만 질문에 동원됩니다. 원래 있던 샘플 문서는 지울 수 없습니다.
-    </p>
-    <ul class="doc-list" id="doc-list" data-testid="doc-list"></ul>
-  </section>
-
-  <!-- ── 인박스 ──────────────────────────────────────────────────── -->
-  <section id="panel-inbox" role="tabpanel" aria-labelledby="tab-inbox" tabindex="0" hidden>
-    <h2 class="section-title">확인 요청</h2>
-    <p class="hint">
-      Agent 가 확신을 갖지 못한 것만 옵니다. 요약·근거·초안이 함께 오므로
-      대개 몇 초 안에 처리됩니다.
-    </p>
-    <ul class="inbox-list" id="inbox-list" data-testid="inbox-list"></ul>
-  </section>
-
-  <!-- ── 감사 로그 ───────────────────────────────────────────────── -->
-  <section id="panel-audit" role="tabpanel" aria-labelledby="tab-audit" tabindex="0" hidden>
-    <h2 class="section-title">경계를 넘은 것 전부</h2>
-    <p class="hint">
-      원문 문구로 검색해 보세요. <strong>0건</strong>이면 그 문구는 한 번도 나가지 않았습니다.
-    </p>
-    <div class="search-row">
-      <label class="sr-only" for="audit-search">검색어</label>
-      <input type="search" id="audit-search" data-testid="audit-search" maxlength="200"
-             placeholder="REQ-4412">
-      <button type="button" class="btn" id="audit-search-btn">검색</button>
-      <button type="button" class="btn btn-ghost" id="audit-clear">전체 보기</button>
+    <div class="org-footer">
+      <div class="whoami">
+        <label class="whoami-label" for="user-select">현재 사용자</label>
+        <select id="user-select" data-testid="user-select"></select>
+        <span class="whoami-note">데모용 전환</span>
+      </div>
     </div>
-    <div class="quick-row" id="audit-quick"></div>
-    <div id="audit-zero" data-testid="audit-zero-hit" aria-live="assertive"></div>
-    <p class="audit-meta" id="audit-meta"></p>
-    <ul class="audit-list" id="audit-list" data-testid="audit-list"></ul>
-  </section>
-</main>
+  </aside>
+
+</div>
 
 <!-- ══════════════════════════════════════════════════════════════════
-     미리보기 — 결정적 장면 ①
-     페이로드 전문을 보여준다. 생략·접기·"더 보기" 가 없다 (BR-U-01).
+     보안 프로토콜 관리 모달
+     ══════════════════════════════════════════════════════════════════ -->
+<dialog id="protocol-modal" aria-labelledby="protocol-modal-title">
+  <div class="protocol-modal-layout">
+
+    <!-- 왼쪽: 프로토콜 목록 -->
+    <div class="protocol-sidebar">
+      <div class="protocol-sidebar-head">
+        <h2 id="protocol-modal-title">보안 프로토콜</h2>
+        <button type="button" class="btn btn-ghost modal-close-btn" id="protocol-modal-close">✕</button>
+      </div>
+
+      <div class="protocol-level-group">
+        <div class="protocol-level-label">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          전사
+        </div>
+        <div id="proto-list-company" class="proto-list"></div>
+        <button type="button" class="proto-add-btn" data-level="company" data-owner="all">+ 전사 프로토콜 추가</button>
+      </div>
+
+      <div class="protocol-level-group">
+        <div class="protocol-level-label">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          부서/팀
+        </div>
+        <div id="proto-list-team" class="proto-list"></div>
+        <button type="button" class="proto-add-btn" data-level="team" data-owner="">+ 팀 프로토콜 추가</button>
+      </div>
+
+      <div class="protocol-level-group">
+        <div class="protocol-level-label">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          개인
+        </div>
+        <div id="proto-list-personal" class="proto-list"></div>
+        <button type="button" class="proto-add-btn" data-level="personal" data-owner="">+ 개인 프로토콜 추가</button>
+      </div>
+
+      <div class="protocol-merged-preview">
+        <button type="button" class="btn btn-ghost btn-sm" id="show-merged-btn">현재 적용 규칙 보기</button>
+        <div id="merged-preview" class="merged-preview" hidden></div>
+      </div>
+    </div>
+
+    <!-- 오른쪽: 편집 폼 -->
+    <div class="protocol-editor" id="protocol-editor">
+      <div class="editor-empty" id="editor-empty">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <p>왼쪽에서 프로토콜을 선택하거나 새로 추가하세요</p>
+      </div>
+
+      <form id="protocol-form" class="proto-form" hidden>
+        <div class="proto-form-head">
+          <div>
+            <span class="proto-form-level-badge" id="form-level-badge"></span>
+            <input type="text" id="form-owner" class="proto-owner-input" placeholder="소유자 (예: person:kim, sw-dev)">
+          </div>
+          <div class="proto-form-actions">
+            <button type="button" class="btn btn-danger btn-sm" id="proto-delete-btn">삭제</button>
+            <button type="submit" class="btn btn-primary btn-sm">저장</button>
+          </div>
+        </div>
+
+        <input type="hidden" id="form-level">
+
+        <label class="proto-field-label">설명</label>
+        <input type="text" id="form-description" class="proto-text-input" placeholder="이 프로토콜의 용도를 간단히 설명하세요">
+
+        <div class="proto-section secret-section">
+          <div class="proto-section-title">
+            <span class="dot dot-bad"></span> SECRET 판정 조건
+            <span class="proto-section-hint">아래 항목 중 하나라도 해당하면 기밀로 분류됩니다</span>
+          </div>
+
+          <label class="proto-field-label">키워드 <span class="proto-field-hint">한 줄에 하나씩</span></label>
+          <textarea id="form-secret-keywords" class="proto-textarea" rows="3"
+                    placeholder="H社&#10;하나텔&#10;고객사명"></textarea>
+
+          <label class="proto-field-label">정규식 패턴 <span class="proto-field-hint">한 줄에 하나씩</span></label>
+          <textarea id="form-secret-patterns" class="proto-textarea" rows="3"
+                    placeholder="REQ-\d{4}&#10;\d+억원&#10;CTR-\d{6}"></textarea>
+
+          <label class="proto-field-label">디렉토리 경로 <span class="proto-field-hint">glob 패턴</span></label>
+          <textarea id="form-secret-dirs" class="proto-textarea" rows="2"
+                    placeholder="corpus/customer-*/**&#10;**/confidential/**"></textarea>
+
+          <label class="proto-field-label">파일 확장자</label>
+          <textarea id="form-secret-exts" class="proto-textarea" rows="2"
+                    placeholder=".curs&#10;.contract&#10;.nda"></textarea>
+        </div>
+
+        <div class="proto-section internal-section">
+          <div class="proto-section-title">
+            <span class="dot dot-warn"></span> INTERNAL 판정 조건
+            <span class="proto-section-hint">외부 공개는 불가하지만 경계 밖 전달은 가능한 수준</span>
+          </div>
+
+          <label class="proto-field-label">키워드</label>
+          <textarea id="form-internal-keywords" class="proto-textarea" rows="2"
+                    placeholder="atlas-ml&#10;Nova-gateway"></textarea>
+
+          <label class="proto-field-label">디렉토리 경로</label>
+          <textarea id="form-internal-dirs" class="proto-textarea" rows="2"
+                    placeholder="corpus/*/docs/**"></textarea>
+        </div>
+
+        <div class="proto-section open-section">
+          <div class="proto-section-title">
+            <span class="dot dot-ok"></span> OPEN 허용 경로
+            <span class="proto-section-hint">이 경로 + 문서 헤더에 공개 표기가 있을 때만 공개 허용</span>
+          </div>
+
+          <label class="proto-field-label">디렉토리 경로</label>
+          <textarea id="form-open-dirs" class="proto-textarea" rows="2"
+                    placeholder="corpus/public/**"></textarea>
+        </div>
+
+        <div class="proto-section">
+          <div class="proto-section-title">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            EXAONE 컨텍스트 힌트
+            <span class="proto-section-hint">AI 판정 시 참고할 회사/팀 맥락 설명</span>
+          </div>
+
+          <textarea id="form-exaone-hints" class="proto-textarea" rows="3"
+                    placeholder="이 팀은 자동차 소프트웨어 B2B 기업입니다&#10;CURS 문서는 항상 기밀입니다"></textarea>
+        </div>
+      </form>
+    </div>
+
+  </div>
+</dialog>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     미리보기 모달
      ══════════════════════════════════════════════════════════════════ -->
 <dialog id="preview-modal" data-testid="preview-modal" aria-labelledby="preview-title">
   <form method="dialog" class="modal-form">

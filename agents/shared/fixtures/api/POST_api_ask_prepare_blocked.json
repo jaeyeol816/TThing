@@ -1,0 +1,40 @@
+{
+  "request_id": "req_01JS3B",
+  "calls": [
+    {
+      "envelope_id": null,
+      "target_entity_id": "person:kim",
+      "agent_label": "김철수 책임의 Agent",
+      "sub_question": null,
+      "tier": "secret",
+      "disposition": "blocked",
+      "preview": null,
+      "fallback": {
+        "entity_id": "person:kim",
+        "agent_label": "김철수 책임의 Agent",
+        "text": "정확한 수치는 이 화면에서 제공할 수 없습니다.\n확인된 것은 「임계를 넘었다」는 정성적 기록뿐입니다.\n수치 열람은 고객 환경 벤치마크 권한이 필요하며, 김책임에게 확인 요청을 보냈습니다.",
+        "confidence": 0.55,
+        "citations": [
+          {
+            "ref": "NOTE_A",
+            "display_title": "인증 설계 메모",
+            "section": null,
+            "tier": "internal",
+            "as_of": "2025-11-14",
+            "formality": "informal"
+          }
+        ],
+        "tier": "secret",
+        "used_external_agent": false,
+        "freshness": null,
+        "session_as_of": null,
+        "unresolved_refs": []
+      },
+      "blocked_reason": "필수 슬롯 미충족 — 성능 수치 필드가 어휘 사전에 없다"
+    }
+  ],
+  "decomposed": false,
+  "upgraded_tier": null,
+  "upgrade_reason": null,
+  "agents_notified": false
+}

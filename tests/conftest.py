@@ -14,7 +14,7 @@ import pytest
 from hypothesis import settings
 
 REPO = Path(__file__).resolve().parents[1]
-DATA = REPO / "data"
+DATA = REPO / "agents" / "shared"  # 새 구조: shared/ 하위에 공유 파일들
 
 #: Config.validate() 가 존재를 요구하는 파일.
 REQUIRED_DATA_FILES = ("vocab.json", "banned.json", "pseudonyms.json")
@@ -36,12 +36,17 @@ settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "dev"))
 
 @pytest.fixture
 def data_root(tmp_path: Path) -> Path:
-    """필수 데이터 파일이 복사된 격리 데이터 루트."""
+    """필수 데이터 파일이 복사된 격리 데이터 루트 (새 agents/ 구조)."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
     for name in REQUIRED_DATA_FILES:
-        (tmp_path / name).write_bytes((DATA / name).read_bytes())
-    (tmp_path / "verified").mkdir()
-    (tmp_path / "sessions").mkdir()
-    (tmp_path / "fixtures").mkdir()
+        (shared / name).write_bytes((DATA / name).read_bytes())
+    (shared / "fixtures").mkdir()
+    # 각 agent 디렉터리 기본 생성
+    for agent in ("person_kim", "person_park", "person_choi"):
+        (tmp_path / agent / "gatekeeper").mkdir(parents=True)
+        (tmp_path / agent / "data").mkdir(parents=True)
+        (tmp_path / agent / "security_protocol").mkdir(parents=True)
     return tmp_path
 
 
@@ -151,23 +156,47 @@ def bundle(cfg):
 
 @pytest.fixture
 def full_data_root(tmp_path: Path, monkeypatch) -> Path:
-    """코퍼스·세션까지 복사한 데이터 루트.
+    """코퍼스·세션까지 복사한 데이터 루트 (새 agents/ 구조).
 
     실제 코퍼스를 쓴다 — 손으로 만든 샘플로 테스트하면 실물이 깨져도 통과한다.
     """
     import shutil
 
-    # `questions.json` 은 필수가 아니지만(없으면 빈 목록) 복사한다 —
-    # 실물 대본이 코드와 어긋나면 테스트가 잡아야 한다.
+    AGENTS = REPO / "agents"
+
+    # shared/ 복사
+    shared = tmp_path / "shared"
+    shared.mkdir()
     for name in REQUIRED_DATA_FILES + ("labels.json", "questions.json"):
-        (tmp_path / name).write_bytes((DATA / name).read_bytes())
-    # ⚠️ `uploads/` 는 복사하지 않는다. 그 디렉터리는 사람이 데모 중에 올린
-    #    파일이 쌓이는 곳이고, 저장소 상태에 따라 내용이 달라진다. 복사하면
-    #    "어제 시연에서 올린 파일" 때문에 오늘 테스트가 깨진다 (실제로 깨졌다).
-    shutil.copytree(DATA / "corpus", tmp_path / "corpus", ignore=shutil.ignore_patterns("uploads"))
-    shutil.copytree(DATA / "sessions", tmp_path / "sessions")
-    (tmp_path / "verified").mkdir()
-    (tmp_path / "fixtures").mkdir()
+        (shared / name).write_bytes((DATA / name).read_bytes())
+    (shared / "fixtures").mkdir()
+    if (DATA / "data").exists():
+        shutil.copytree(DATA / "data", shared / "data",
+                        ignore=shutil.ignore_patterns("uploads"))
+
+    # 각 agent 디렉터리 복사
+    for agent in ("person_kim", "person_park", "person_choi"):
+        src = AGENTS / agent
+        dst = tmp_path / agent
+        if src.exists():
+            # data/ 복사 (uploads 제외)
+            if (src / "data").exists():
+                shutil.copytree(src / "data", dst / "data",
+                                ignore=shutil.ignore_patterns("uploads"))
+            else:
+                (dst / "data").mkdir(parents=True)
+            # gatekeeper/ 복사
+            dst_gk = dst / "gatekeeper"
+            dst_gk.mkdir(parents=True)
+            if (src / "gatekeeper").exists():
+                for f in (src / "gatekeeper").iterdir():
+                    shutil.copy2(f, dst_gk / f.name)
+            # security_protocol/ 기본 생성
+            (dst / "security_protocol").mkdir(parents=True)
+        else:
+            (dst / "data").mkdir(parents=True)
+            (dst / "gatekeeper").mkdir(parents=True)
+            (dst / "security_protocol").mkdir(parents=True)
 
     monkeypatch.setenv("MESH_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("EXAONE_MODE", "mock")

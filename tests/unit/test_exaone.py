@@ -274,7 +274,7 @@ async def test_record_then_replay_roundtrip(cfg, monkeypatch, mock_env):
     assert replayed == recorded
 
     # 녹화된 픽스처 파일에도 reasoning 이 없어야 한다
-    files = list((mock_env / "fixtures" / "exaone").glob("classify_*.json"))
+    files = list((mock_env / "shared" / "fixtures" / "exaone").glob("classify_*.json"))
     assert len(files) == 1
     saved = files[0].read_text(encoding="utf-8")
     for phrase in LEAKED_PHRASES:
@@ -328,7 +328,7 @@ async def test_recording_does_not_overwrite_an_existing_fixture(cfg, monkeypatch
         second = await c.complete_json("sys", "user", name="classify")
     assert second == {"tier": "internal"}, "live 응답은 그 실행의 것을 그대로 쓴다"
 
-    files = list((mock_env / "fixtures" / "exaone").glob("classify_*.json"))
+    files = list((mock_env / "shared" / "fixtures" / "exaone").glob("classify_*.json"))
     assert len(files) == 1, "키가 같으므로 파일은 하나다"
     assert json.loads(files[0].read_text(encoding="utf-8")) == {"tier": "secret"}, (
         "첫 녹화가 유지되어야 한다 — 재녹화가 게이트를 조용히 뒤집으면 안 된다"
@@ -360,5 +360,5 @@ async def test_overwrite_is_possible_but_explicit(cfg, monkeypatch, mock_env):
     async with _client(Config.load(), answering("internal")) as c:
         await c.complete_json("sys", "user", name="classify")
 
-    files = list((mock_env / "fixtures" / "exaone").glob("classify_*.json"))
+    files = list((mock_env / "shared" / "fixtures" / "exaone").glob("classify_*.json"))
     assert json.loads(files[0].read_text(encoding="utf-8")) == {"tier": "internal"}

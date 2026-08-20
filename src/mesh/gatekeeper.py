@@ -432,9 +432,15 @@ class Gatekeeper:
         self.broker = broker
         self.audit = audit
         self.cache = cache or EnvelopeCache()
-        self.classifier = Classifier(
-            data.rules, exaone, use_exaone=cfg.exaone_mode != "mock" or cfg.record_fixtures
-        )
+        self._use_exaone = cfg.exaone_mode != "mock" or cfg.record_fixtures
+
+    @property
+    def classifier(self) -> Classifier:
+        """호출마다 최신 rules 를 반영한 Classifier 를 반환한다.
+
+        프로토콜 UI 에서 규칙을 수정하면 다음 classify 호출부터 즉시 적용된다.
+        """
+        return Classifier(self.data.rules, self.exaone, use_exaone=self._use_exaone)
 
     @classmethod
     def build(
@@ -461,6 +467,16 @@ class Gatekeeper:
     # ── 내부 보조 ────────────────────────────────────────────────────
 
     def _schema(self, task_schema_id: str) -> TaskSchema:
+        if task_schema_id == "passthrough":
+            # Passthrough 경로 — 구조 추출 없이 직접 전달
+            return TaskSchema(
+                schema_id="passthrough",
+                domain="general",
+                question_template="passthrough",
+                answer_format={"answer": "string"},
+                entity_roles=("our_component",),
+                slots=(),
+            )
         schema = self.data.vocab.task_schemas.get(task_schema_id)
         if schema is None:
             raise GatekeeperError(f"미등록 task_schema: {task_schema_id!r}")
@@ -597,6 +613,62 @@ class Gatekeeper:
             ),
         )
         # ⚠️ Mapping 은 반환값으로만 나간다. env 에 담기지 않는다 (BR-G-09).
+        return env, mapping
+
+    # ── Passthrough — 구조 추출 없이 직접 전달 ────────────────────────
+
+    def to_payload_passthrough(
+        self, call: AgentCall, chunks: list[Chunk], question: str
+    ) -> tuple[PayloadEnvelope, Mapping]:
+        """구조 추출 없이 질문과 근거를 직접 페이로드로 만든다.
+
+        ⚠️ SECRET 등급에서는 절대 사용하지 않는다 — 호출자가 보장한다.
+
+        INTERNAL 에서는 가명화를 적용하고, OPEN 에서는 원문 그대로 보낸다.
+        구조 추출(슬롯 채우기)을 거치지 않으므로 vocab.json 제약 없이 동작한다.
+        """
+        used = [c for c in chunks if not call.chunk_ids or c.chunk_id in call.chunk_ids]
+        if not used:
+            used = chunks[:3]  # 최소한 일부라도 사용
+
+        if call.tier is Tier.INTERNAL:
+            pseudo = pseudonymize([c.text for c in used], self.data.pseudonyms)
+            texts = pseudo.texts
+            mapping = pseudo.mapping
+            representation = Representation.PSEUDONYMIZED
+        else:
+            texts = [c.text for c in used]
+            mapping = Mapping(table={})
+            representation = Representation.VERBATIM
+
+        # 구조화 없이 question + 근거 텍스트를 담는 단순 페이로드
+        payload: dict = {
+            "task": "passthrough",
+            "question": question,
+            "context": [
+                {"ref": f"DOC_{i+1}", "content_excerpt": t}
+                for i, t in enumerate(texts)
+            ],
+        }
+
+        env = PayloadEnvelope(
+            envelope_id=new_envelope_id(),
+            tier=call.tier,
+            task_schema_id="passthrough",
+            payload=payload,
+            representation=representation,
+            payload_sha256=sha256_canonical(payload),
+            size_bytes=validator.payload_bytes(payload),
+        )
+        log.info(
+            "passthrough 페이로드 생성",
+            extra=log_extra(
+                envelope_id=env.envelope_id,
+                tier=env.tier.value,
+                representation=representation.value,
+                size_bytes=env.size_bytes,
+            ),
+        )
         return env, mapping
 
     # ── 검증과 사람 확인 ─────────────────────────────────────────────

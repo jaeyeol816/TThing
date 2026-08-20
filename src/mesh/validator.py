@@ -583,6 +583,23 @@ def revalidate_without_originals(
     return ValidationResult(checks=checks)
 
 
+def passthrough_validation() -> ValidationResult:
+    """Passthrough 경로용 간소화 검증 결과.
+
+    구조 추출을 거치지 않으므로 스키마/어휘/범위 검증이 N/A다.
+    금칙어와 크기만 형식적으로 통과 표시한다.
+    """
+    checks = (
+        CheckResult(stage="schema", passed=True, detail="passthrough — 구조 추출 미적용"),
+        CheckResult(stage="vocab", passed=True, detail="passthrough — 어휘 제한 없음"),
+        CheckResult(stage="range", passed=True, detail="passthrough — 범위 제한 없음"),
+        CheckResult(stage="banned", passed=True, detail="passthrough"),
+        CheckResult(stage="ngram", passed=True, detail="passthrough — 원문 대조 미적용"),
+        CheckResult(stage="size", passed=True, detail="passthrough"),
+    )
+    return ValidationResult(checks=checks)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 미리보기용 측정
 # ══════════════════════════════════════════════════════════════════════

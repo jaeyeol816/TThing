@@ -32,6 +32,14 @@ data/sessions/local-*.json
 # 커밋하면 남의 기밀 문서가 저장소 역사에 영구히 남는다 — 되돌릴 수 없다.
 data/corpus/*/uploads/
 
+# agents/ 새 구조 런타임 데이터
+agents/shared/mesh.db
+agents/shared/mesh.db-shm
+agents/shared/mesh.db-wal
+agents/*/gatekeeper/verified.json
+agents/*/data/uploads/
+agents/*/data/kb/
+
 # CDK
 infra/.venv/
 infra/cdk.out/

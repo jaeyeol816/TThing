@@ -1,0 +1,40 @@
+{
+  "agents": [
+    {
+      "entity_id": "person:kim",
+      "display_name": "김철수 책임",
+      "expertise": "인증 · SSO · SDK 보안",
+      "activity_status": "active",
+      "away_minutes": null,
+      "question_count_today": 3,
+      "current_focus_summary": "인증 관련 작업 중",
+      "session_as_of": "2026-08-19T14:31:20+09:00",
+      "freshness": "live",
+      "daily_limit_reached": false
+    },
+    {
+      "entity_id": "person:park",
+      "display_name": "박선영 선임",
+      "expertise": "데이터 파이프라인 · 모델 학습",
+      "activity_status": "active",
+      "away_minutes": null,
+      "question_count_today": 1,
+      "current_focus_summary": "모델 학습 실행 중",
+      "session_as_of": "2026-08-19T14:33:05+09:00",
+      "freshness": "live",
+      "daily_limit_reached": false
+    },
+    {
+      "entity_id": "person:choi",
+      "display_name": "최민수 선임",
+      "expertise": "SDK 인증 모듈 · 배포 파이프라인",
+      "activity_status": "away",
+      "away_minutes": 125,
+      "question_count_today": 0,
+      "current_focus_summary": "배포 준비 작업 중",
+      "session_as_of": "2026-08-19T12:30:00+09:00",
+      "freshness": "stale",
+      "daily_limit_reached": false
+    }
+  ]
+}

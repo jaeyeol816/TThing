@@ -1,0 +1,37 @@
+{
+  "request_id": "req_01JS2B",
+  "merged": {
+    "answers": [
+      {
+        "entity_id": "person:park",
+        "agent_label": "박선영 선임의 Agent",
+        "text": "현재 박선임이 동일 설정으로 학습을 실행 중입니다 (14:02 시작, 17:10 완료 예상, cuda:0 점유). 지금 같은 스크립트를 실행하면 GPU가 충돌할 가능성이 높습니다. 다만 실행 허가 여부는 제가 판단할 수 없습니다.",
+        "confidence": 0.38,
+        "citations": [
+          {
+            "ref": "SESSION_A",
+            "display_title": "세션 (실시간)",
+            "section": null,
+            "tier": "internal",
+            "as_of": "2026-08-19",
+            "formality": "official"
+          }
+        ],
+        "tier": "internal",
+        "used_external_agent": true,
+        "freshness": "live",
+        "session_as_of": "2026-08-19T14:33:05+09:00",
+        "unresolved_refs": []
+      }
+    ],
+    "divergent": false,
+    "divergence_note": null,
+    "disposition": "escalate"
+  },
+  "escalations": [
+    "itm_01JS2B1"
+  ],
+  "elapsed_seconds": 10.2,
+  "interrupts_avoided": 0,
+  "minutes_saved_estimate": 0
+}

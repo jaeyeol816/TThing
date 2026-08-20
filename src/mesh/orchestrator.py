@@ -74,7 +74,7 @@ from mesh.schemas import (
     TierDecision,
 )
 from mesh.store import KnowledgeStore, SessionNotFound, confidence_factor
-from mesh.validator import normalize_text
+from mesh.validator import normalize_text, passthrough_validation
 
 log = get_logger("orchestrator")
 
@@ -386,6 +386,8 @@ class Orchestrator:
         classified: list[Chunk] = []
         try:
             return await self._prepare_inner(request, target, pending, classified)
+        except PrepareFailed:
+            raise
         except Exception as e:  # noqa: BLE001 — 폴백에 근거를 넘기고 다시 올린다
             raise PrepareFailed(e, classified) from e
 
@@ -413,7 +415,16 @@ class Orchestrator:
         chunks = self.store.read(paths, target)
         chunks += self.store.verified_chunks(session)
         if not chunks:
-            raise ExtractionFailed(f"{target} 의 세션에서 읽을 근거를 찾지 못했다")
+            # 세션에 관련 근거가 없음 — 지식 갱신 시도
+            log.info(
+                "근거 없음 → 지식 갱신 시도",
+                extra=log_extra(target=target, question_len=len(request.question)),
+            )
+            kb_chunk = await self.store.kb_search_and_save(target, request.question)
+            if kb_chunk:
+                chunks = [kb_chunk]
+            else:
+                raise ExtractionFailed(f"{target} 의 세션에서 읽을 근거를 찾지 못했다")
 
         # ② 지식 등급 — `classified` 는 호출자가 준 리스트를 채운다.
         #    실패해도 폴백이 등급을 알 수 있어야 한다 (PrepareFailed 참조).
@@ -424,15 +435,88 @@ class Orchestrator:
             decision = await self.gatekeeper.classify(chunk.text, chunk.internal_path)
             classified.append(chunk.model_copy(update={"tier": decision.tier}))
 
-        calls = self.gatekeeper.plan_calls(request.question, target, classified, q_tier)
-        call = calls[0]
+        # 구조 추출 시도 — 실패 시 SECRET이 아니면 passthrough 경로로 전환
+        try:
+            calls = self.gatekeeper.plan_calls(request.question, target, classified, q_tier)
+            call = calls[0]
+        except ExtractionFailed:
+            # plan_calls에서 choose_schema 실패 — 스키마 매칭 안 됨
+            tiers = [q_tier.tier, *[(c.tier or Tier.INTERNAL) for c in classified]]
+            effective_tier = max(tiers)
+            if effective_tier is Tier.SECRET:
+                raise  # SECRET은 구조 추출 필수
+            log.info(
+                "스키마 매칭 실패 → passthrough 경로 전환",
+                extra=log_extra(target=target, tier=effective_tier.value),
+            )
+            from mesh.schemas import AgentCall
+            call = AgentCall(
+                call_id=f"call_{uuid.uuid4().hex[:16]}",
+                entity_id=target,
+                tier=effective_tier,
+                task_schema_id="passthrough",
+                chunk_ids=tuple(c.chunk_id for c in classified),
+            )
+            env, mapping = self.gatekeeper.to_payload_passthrough(
+                call, classified, request.question
+            )
+            originals = tuple(c.text for c in classified)
+            # passthrough는 간소화된 검증만 적용
+            env = env.model_copy(update={"validation": passthrough_validation()})
+
+            self.gatekeeper.cache.put(env, mapping, originals, target)
+            pending.calls.append(
+                PendingCall(
+                    envelope_id=env.envelope_id,
+                    target_entity_id=target,
+                    chunks=classified,
+                    session_facts=facts,
+                    freshness=fresh,
+                    confidence_factor=factor,
+                )
+            )
+
+            tier_note = (
+                (call.tier, f"{q_tier.tier.label_ko} 질문에 {call.tier.label_ko} 근거가 동원됐습니다")
+                if call.tier is not q_tier.tier
+                else None
+            )
+
+            return (
+                PreparedCall(
+                    envelope_id=env.envelope_id,
+                    target_entity_id=target,
+                    agent_label=persona.agent_label,
+                    sub_question=SubQuestionView(
+                        id=call.call_id, kind="passthrough", text=request.question, tier=call.tier
+                    ),
+                    tier=call.tier,
+                    disposition="ready",
+                    preview=self.gatekeeper.preview(env, originals),
+                ),
+                tier_note,
+            )
+
         tier_note = (
             (call.tier, f"{q_tier.tier.label_ko} 질문에 {call.tier.label_ko} 근거가 동원됐습니다")
             if call.tier is not q_tier.tier
             else None
         )
 
-        env, mapping = await self.gatekeeper.to_payload(call, classified, request.question)
+        # 구조 추출 시도 — 실패 시 SECRET이 아니면 passthrough 경로로 전환
+        try:
+            env, mapping = await self.gatekeeper.to_payload(call, classified, request.question)
+        except ExtractionFailed:
+            if call.tier is Tier.SECRET:
+                raise  # SECRET은 구조 추출 필수 — 원문 유출 방지
+            # INTERNAL/OPEN: 구조 추출 없이 직접 전달
+            log.info(
+                "구조 추출 실패 → passthrough 경로 전환",
+                extra=log_extra(target=target, tier=call.tier.value),
+            )
+            env, mapping = self.gatekeeper.to_payload_passthrough(
+                call, classified, request.question
+            )
         originals = tuple(c.text for c in classified)
         validation = self.gatekeeper.validate(env, originals)
         env = env.model_copy(update={"validation": validation})

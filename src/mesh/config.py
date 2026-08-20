@@ -317,44 +317,89 @@ class Config:
         return any(h in url for h in _PUBLIC_LLM_HOSTS)
 
     @property
+    def shared_root(self) -> Path:
+        """공유 데이터 루트 — agents/shared/"""
+        return self.data_root / "shared"
+
+    @property
     def vocab_path(self) -> Path:
-        return self.data_root / "vocab.json"
+        return self.shared_root / "vocab.json"
 
     @property
     def banned_path(self) -> Path:
-        return self.data_root / "banned.json"
+        return self.shared_root / "banned.json"
 
     @property
     def pseudonyms_path(self) -> Path:
-        return self.data_root / "pseudonyms.json"
+        return self.shared_root / "pseudonyms.json"
 
     @property
     def labels_path(self) -> Path:
-        return self.data_root / "labels.json"
+        return self.shared_root / "labels.json"
 
     @property
     def questions_path(self) -> Path:
-        return self.data_root / "questions.json"
-
-    @property
-    def corpus_root(self) -> Path:
-        return self.data_root / "corpus"
-
-    @property
-    def sessions_root(self) -> Path:
-        return self.data_root / "sessions"
-
-    @property
-    def verified_root(self) -> Path:
-        return self.data_root / "verified"
+        return self.shared_root / "questions.json"
 
     @property
     def fixtures_root(self) -> Path:
-        return self.data_root / "fixtures"
+        return self.shared_root / "fixtures"
 
     @property
     def db_path(self) -> Path:
-        return self.data_root / "mesh.db"
+        return self.shared_root / "mesh.db"
+
+    # ── agent별 경로 헬퍼 ─────────────────────────────────────────────
+
+    def _agent_safe_id(self, entity_id: str) -> str:
+        """entity_id → 파일시스템 안전 디렉터리명. person:kim → person_kim"""
+        return entity_id.replace(":", "_")
+
+    def agent_root(self, entity_id: str) -> Path:
+        """agents/{entity_id}/ — agent의 최상위 디렉터리"""
+        return self.data_root / self._agent_safe_id(entity_id)
+
+    def agent_data_root(self, entity_id: str) -> Path:
+        """agents/{entity_id}/data/ — agent가 접근할 수 있는 지식 파일들"""
+        return self.agent_root(entity_id) / "data"
+
+    def agent_gatekeeper_root(self, entity_id: str) -> Path:
+        """agents/{entity_id}/gatekeeper/ — 세션·검증 QA"""
+        return self.agent_root(entity_id) / "gatekeeper"
+
+    def agent_protocol_root(self, entity_id: str) -> Path:
+        """agents/{entity_id}/security_protocol/ — 개인 보안 프로토콜"""
+        return self.agent_root(entity_id) / "security_protocol"
+
+    def agent_session_path(self, entity_id: str) -> Path:
+        return self.agent_gatekeeper_root(entity_id) / "session.json"
+
+    def agent_verified_path(self, entity_id: str) -> Path:
+        return self.agent_gatekeeper_root(entity_id) / "verified.json"
+
+    def agent_uploads_dir(self, entity_id: str) -> Path:
+        return self.agent_data_root(entity_id) / "uploads"
+
+    # ── 하위 호환: corpus_root는 shared/data/ 를 가리킨다 ─────────────
+    # (기존 코드가 corpus_root를 직접 참조하는 곳이 있으면 안전하게 폴백)
+
+    @property
+    def corpus_root(self) -> Path:
+        """하위 호환용. 새 코드는 agent_data_root(entity_id) 를 사용할 것."""
+        return self.shared_root / "data"
+
+    # ── 하위 호환: sessions_root / verified_root ──────────────────────
+    # KnowledgeStore가 아직 이 프로퍼티를 직접 쓰는 경우를 위한 임시 유지
+
+    @property
+    def sessions_root(self) -> Path:
+        """하위 호환용. 새 코드는 agent_session_path(entity_id) 를 사용할 것."""
+        return self.data_root / "_legacy_sessions"
+
+    @property
+    def verified_root(self) -> Path:
+        """하위 호환용. 새 코드는 agent_verified_path(entity_id) 를 사용할 것."""
+        return self.data_root / "_legacy_verified"
 
     @property
     def agents_path(self) -> Path:
@@ -505,13 +550,30 @@ class DataBundle:
         self.vocab: Vocabulary = Vocabulary.load(cfg.vocab_path)
         self.banned: BannedTerms = BannedTerms.load(cfg.banned_path)
         self.pseudonyms: PseudonymTargets = PseudonymTargets.load(cfg.pseudonyms_path)
-        self.rules: ClassificationRules = ClassificationRules(banned=self.banned)
+        self._base_rules: ClassificationRules = ClassificationRules(banned=self.banned)
         self.vocab_sha256: str = sha256_file(cfg.vocab_path)
         self.agents: dict[str, AgentConfig] = (
             load_agents(cfg.agents_path) if load_agent_configs else {}
         )
         self._add_entity_ids_to_pseudonyms()
         self._check_lists_are_disjoint()
+
+        # ProtocolStore — 보안 프로토콜 CRUD
+        from mesh.protocol_store import ProtocolStore  # 지연 import — 순환 방지
+        self.protocol_store: ProtocolStore = ProtocolStore(cfg.data_root, cfg=cfg)
+
+    @property
+    def rules(self) -> ClassificationRules:
+        """프로토콜 머지 결과를 항상 최신으로 반환한다.
+
+        UI에서 프로토콜을 수정하면 다음 classify 호출부터 즉시 반영된다.
+        서버 재시작 불필요.
+        """
+        try:
+            return self.protocol_store.merged_rules(base_banned=self.banned)
+        except Exception:
+            # 프로토콜 파일 오류 시 기본 규칙으로 안전하게 폴백
+            return self._base_rules
 
     def _add_entity_ids_to_pseudonyms(self) -> None:
         """등록된 `entity_id` 와 표시 이름을 PERSON 치환 대상에 넣는다.

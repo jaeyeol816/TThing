@@ -1,0 +1,142 @@
+{
+  "version": "1.0.0",
+  "frozen_at": "2026-08-19",
+  "_README": [
+    "이 파일이 설계의 심장이다. 경계 밖으로 나갈 수 있는 값의 전체 집합이 여기서 확정된다.",
+    "",
+    "slots[].kind 는 enum / int / bool 세 가지뿐이다.",
+    "자유 문자열 슬롯(kind='str')은 존재하지 않으며 추가하지 않는다.",
+    "자유 문자열을 허용하면 원문이 새어나갈 채널이 생긴다.",
+    "",
+    "새 task 를 추가하기 전에 _intentionally_absent 를 먼저 읽어라.",
+    "Day 1 종료 시 동결됨. 변경은 3인 합의로만."
+  ],
+
+  "slots": {
+    "auth_mechanism_class": {
+      "kind": "enum",
+      "required": true,
+      "allowed": ["password", "challenge_response", "certificate", "biometric", "token_bearer"],
+      "description": "authentication mechanism family"
+    },
+    "session_binding": {
+      "kind": "enum",
+      "required": true,
+      "allowed": ["required", "optional", "none"],
+      "description": "whether credentials are bound to a session"
+    },
+    "renewal_mode": {
+      "kind": "enum",
+      "required": false,
+      "allowed": ["explicit", "background_silent", "none"],
+      "description": "how credentials are renewed"
+    },
+    "credential_reuse_allowed": {
+      "kind": "bool",
+      "required": false,
+      "description": "whether reusing a credential across sessions is permitted"
+    },
+    "max_session_hours": {
+      "kind": "int",
+      "required": false,
+      "min": 0,
+      "max": 8760,
+      "description": "maximum session lifetime in hours"
+    },
+    "credential_lifetime_hours": {
+      "kind": "int",
+      "required": false,
+      "min": 0,
+      "max": 8760,
+      "description": "credential or token lifetime in hours"
+    },
+    "sampling_strategy_class": {
+      "kind": "enum",
+      "required": false,
+      "allowed": ["oversample", "undersample", "class_weight", "hybrid", "none"],
+      "description": "label imbalance handling family"
+    },
+    "resource_contention": {
+      "kind": "enum",
+      "required": false,
+      "allowed": ["gpu_busy", "gpu_free", "unknown"],
+      "description": "whether a shared compute resource is occupied"
+    }
+  },
+
+  "tasks": ["constraint_conflict_check", "technique_lookup", "rationale_lookup"],
+  "domains": ["authentication", "data_pipeline", "deployment"],
+  "question_templates": [
+    "conflict_and_mitigation",
+    "technique_explanation",
+    "design_rationale"
+  ],
+
+  "_entity_roles_note": [
+    "role 은 슬롯이 아니라 페이로드의 구조 키다 (STRUCTURAL_KEYS).",
+    "허용값은 전역 목록이 아니라 해당 task_schema 의 entity_roles 에서 온다.",
+    "그래야 검증이 더 정확하다 — constraint_conflict_check 에",
+    "'goal' role 이 들어오면 잡힌다.",
+    "아래 목록은 전체 집합이며 validator 의 상한으로만 쓴다."
+  ],
+  "entity_roles": ["external_requirement", "our_component", "constraint", "goal"],
+
+  "task_schemas": {
+    "constraint_conflict_check": {
+      "domain": "authentication",
+      "question_template": "conflict_and_mitigation",
+      "entity_roles": ["external_requirement", "our_component"],
+      "slots": [
+        "auth_mechanism_class",
+        "session_binding",
+        "credential_reuse_allowed",
+        "max_session_hours",
+        "credential_lifetime_hours",
+        "renewal_mode"
+      ],
+      "answer_format": {
+        "conflict": "bool",
+        "reason": "string",
+        "mitigations": "string[]"
+      }
+    },
+    "technique_lookup": {
+      "domain": "data_pipeline",
+      "question_template": "technique_explanation",
+      "entity_roles": ["our_component"],
+      "slots": ["sampling_strategy_class"],
+      "answer_format": {
+        "technique": "string",
+        "rationale": "string"
+      }
+    },
+    "rationale_lookup": {
+      "domain": "authentication",
+      "question_template": "design_rationale",
+      "entity_roles": ["our_component", "constraint"],
+      "slots": ["session_binding", "renewal_mode"],
+      "answer_format": {
+        "rationale": "string",
+        "tradeoffs": "string[]"
+      }
+    }
+  },
+
+  "_intentionally_absent": [
+    "금액 · 계약금액 · 단가 · 라이선스 비용 — 함정 문서의 판별 기준이다",
+    "계약번호 · 요구사항번호 (REQ-nnnn) · 제품코드 — 식별자",
+    "인명 · 고객사명 · 제품명 · 버전 문자열",
+    "p99_latency_ms · throughput_tps · 성능 수치 일반",
+    "일정 · 마일스톤 날짜",
+    "자유 형식 문서 인용 · 원문 발췌",
+    "",
+    "성능 수치를 넣지 않은 것은 실수가 아니다.",
+    "시나리오 3의 폴백이 정확히 여기서 발생한다 (FR-54).",
+    "EXAONE 이 p99_latency_ms 를 만들려 해도 슬롯이 없으므로 조립 단계에서 버려지고,",
+    "필수 슬롯이 채워지지 않아 ExtractionFailed 가 되고, 신뢰 구역 안에서 답한다.",
+    "",
+    "슬롯을 추가하고 싶은 유혹이 생기면 이 목록을 다시 읽어라 (NFR-M-03).",
+    "새 task 를 추가할 때는 어휘 사전과 검증 규칙을 반드시 함께 정의한다.",
+    "'구조 추출을 거쳤으니 무엇이든 보내도 된다'는 논리는 금지한다."
+  ]
+}

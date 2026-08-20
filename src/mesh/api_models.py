@@ -528,3 +528,64 @@ class PresetQuestion(BaseModel):
     question: str
     targets: tuple[str, ...] = ()
     note: str | None = None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 보안 프로토콜 API 모델
+# ══════════════════════════════════════════════════════════════════════
+
+
+class ProtocolUpsertRequest(BaseModel):
+    """프로토콜 생성/수정 요청."""
+
+    level: Literal["company", "team", "personal"]
+    owner: str = Field(min_length=1, max_length=64)
+    description: str = ""
+
+    secret_keywords: list[str] = Field(default_factory=list)
+    secret_patterns: list[str] = Field(default_factory=list)
+    secret_directories: list[str] = Field(default_factory=list)
+    secret_extensions: list[str] = Field(default_factory=list)
+    secret_content_patterns: list[str] = Field(default_factory=list)
+
+    internal_keywords: list[str] = Field(default_factory=list)
+    internal_directories: list[str] = Field(default_factory=list)
+    internal_extensions: list[str] = Field(default_factory=list)
+
+    open_directories: list[str] = Field(default_factory=list)
+
+    exaone_context_hints: list[str] = Field(default_factory=list)
+
+
+class ProtocolView(BaseModel):
+    """프로토콜 응답."""
+
+    level: str
+    owner: str
+    description: str
+    updated_at: str
+
+    secret_keywords: list[str]
+    secret_patterns: list[str]
+    secret_directories: list[str]
+    secret_extensions: list[str]
+    secret_content_patterns: list[str]
+
+    internal_keywords: list[str]
+    internal_directories: list[str]
+    internal_extensions: list[str]
+
+    open_directories: list[str]
+
+    exaone_context_hints: list[str]
+
+
+class MergedRulesView(BaseModel):
+    """현재 머지된 규칙 미리보기."""
+
+    secret_keywords: list[str]
+    secret_patterns: list[str]
+    secret_path_globs: list[str]
+    open_path_globs: list[str]
+    internal_path_globs: list[str]
+    protocol_count: int

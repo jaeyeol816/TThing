@@ -395,9 +395,9 @@ def test_data_bundle_rejects_overlapping_lists(mock_env):
     from mesh.config import Config, DataBundle
     from mesh.exceptions import ConfigError
 
-    bad = json.loads((mock_env / "pseudonyms.json").read_text(encoding="utf-8"))
+    bad = json.loads((mock_env / "shared" / "pseudonyms.json").read_text(encoding="utf-8"))
     bad["targets"]["PROJ"]["literals"].append("H社")  # 차단 목록과 겹치게
-    (mock_env / "pseudonyms.json").write_text(json.dumps(bad), encoding="utf-8")
+    (mock_env / "shared" / "pseudonyms.json").write_text(json.dumps(bad), encoding="utf-8")
 
     with pytest.raises(ConfigError, match="겹친다"):
         DataBundle(Config.load(strict=False), load_agent_configs=False)
