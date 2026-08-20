@@ -48,11 +48,15 @@ from mesh.exceptions import (
     GatekeeperError,
 )
 from mesh.extractor import (
+    DYNAMIC_DOMAIN,
+    DYNAMIC_SCHEMA,
+    DYNAMIC_TEMPLATE,
     assign_refs,
     build_document,
     build_text_payload,
     choose_schema,
     extract,
+    generate_dynamic_schema,
     refs_mapping,
 )
 from mesh.llm.exaone import ExaoneClient as ExaoneClientImpl
@@ -71,10 +75,12 @@ from mesh.schemas import (
     PreviewCard,
     RehydratedAnswer,
     Representation,
+    SlotDef,
     TaskSchema,
     Tier,
     TierDecision,
     ValidationResult,
+    Vocabulary,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -474,6 +480,10 @@ class Gatekeeper:
         self.audit = audit
         self.cache = cache or EnvelopeCache()
         self._use_exaone = cfg.exaone_mode != "mock" or cfg.record_fixtures
+        #: 동적 스키마 오버레이 (PoC). schema_id -> (TaskSchema, {슬롯이름: SlotDef}).
+        #: to_payload 가 소유자 Agent 어휘를 만들면 여기 등록하고, _schema()·
+        #: validate() 가 여기를 함께 본다. 고정 vocab.json 은 건드리지 않는다.
+        self._dynamic: dict[str, tuple[TaskSchema, dict[str, SlotDef]]] = {}
 
     @property
     def classifier(self) -> Classifier:
@@ -518,10 +528,41 @@ class Gatekeeper:
                 entity_roles=("our_component",),
                 slots=(),
             )
+        dyn = self._dynamic.get(task_schema_id)
+        if dyn is not None:
+            return dyn[0]
         schema = self.data.vocab.task_schemas.get(task_schema_id)
         if schema is None:
             raise GatekeeperError(f"미등록 task_schema: {task_schema_id!r}")
         return schema
+
+    def _register_dynamic(self, schema: TaskSchema, extra_slots: dict[str, SlotDef]) -> None:
+        """동적 생성 스키마를 오버레이에 등록한다 (PoC)."""
+        self._dynamic[schema.schema_id] = (schema, extra_slots)
+
+    def _vocab_for(self, task_schema_id: str) -> Vocabulary:
+        """검증에 쓸 어휘. 동적 스키마면 생성 슬롯/이름을 병합한 vocab 을 만든다.
+
+        고정 vocab.json 은 불변으로 둔다 — 병합본은 이 호출에서만 쓰는 사본이다.
+        검증 2단계(어휘)가 생성 enum 값을 인정하게 하는 것이 목적이고, 나머지
+        단계(금칙어·n-gram·크기)는 병합과 무관하게 그대로 적용된다.
+        """
+        dyn = self._dynamic.get(task_schema_id)
+        if dyn is None:
+            return self.data.vocab
+        schema, extra = dyn
+        v = self.data.vocab
+        return v.model_copy(
+            update={
+                "slots": {**v.slots, **extra},
+                "tasks": tuple(dict.fromkeys((*v.tasks, schema.schema_id))),
+                "domains": tuple(dict.fromkeys((*v.domains, schema.domain))),
+                "question_templates": tuple(
+                    dict.fromkeys((*v.question_templates, schema.question_template))
+                ),
+                "task_schemas": {**v.task_schemas, schema.schema_id: schema},
+            }
+        )
 
     def _identifiers(self, representation: Representation) -> tuple[str, ...]:
         """검증 5단계에 넘길 치환 대상 목록.
@@ -609,10 +650,42 @@ class Gatekeeper:
         Raises:
             ExtractionFailed: 필수 슬롯 미충족 -> answer_in_zone 폴백
         """
-        schema = self._schema(call.task_schema_id)
         used = [c for c in chunks if not call.chunk_ids or c.chunk_id in call.chunk_ids]
         if not used:
             raise ExtractionFailed("호출 계획의 근거 문서를 찾을 수 없다")
+
+        # ── 동적 스키마 경로 (PoC) — 고정 어휘에 없어 소유자 Agent 가 만든다 ──
+        #    ⚠️ 기밀 등급에서만. 자유 문자열 슬롯이 없다는 속성은 그대로다
+        #    (generate_dynamic_schema 가 enum/int/bool 만 통과시킨다).
+        if call.task_schema_id == DYNAMIC_SCHEMA:
+            if call.tier is not Tier.SECRET:
+                raise ExtractionFailed("동적 스키마는 기밀 등급 전용 경로다")
+            schema, extra_slots = await generate_dynamic_schema(
+                used, question, self.exaone, owner=call.entity_id
+            )
+            self._register_dynamic(schema, extra_slots)
+            result = await extract(used, schema, self.exaone)
+            env = PayloadEnvelope(
+                envelope_id=new_envelope_id(),
+                tier=call.tier,
+                task_schema_id=schema.schema_id,
+                payload=result.payload,
+                representation=Representation.STRUCTURED,
+                payload_sha256=sha256_canonical(result.payload),
+                size_bytes=validator.payload_bytes(result.payload),
+            )
+            log.info(
+                "표현 변환 완료 (동적 스키마)",
+                extra=log_extra(
+                    envelope_id=env.envelope_id,
+                    tier=env.tier.value,
+                    schema_id=schema.schema_id,
+                    size_bytes=env.size_bytes,
+                ),
+            )
+            return env, result.mapping
+
+        schema = self._schema(call.task_schema_id)
 
         match call.tier:
             case Tier.SECRET:
@@ -726,7 +799,7 @@ class Gatekeeper:
         return validator.validate(
             env.payload,
             schema=self._schema(env.task_schema_id),
-            vocab=self.data.vocab,
+            vocab=self._vocab_for(env.task_schema_id),
             banned=self.data.banned,
             originals=originals,
             representation=env.representation,

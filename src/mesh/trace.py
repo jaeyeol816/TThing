@@ -885,16 +885,6 @@ class TraceRecorder:
                     columns=("항목", "값"),
                     rows=rows,
                 ),
-                TracePanel(
-                    panel_id="dispatch-note",
-                    label="경계의 위치",
-                    kind="note",
-                    text=note
-                    or (
-                        "여기가 신뢰 구역의 끝이다. 위쪽 단계는 전부 노트북·사내망 안에서 "
-                        "일어났고, 아래로 나간 것은 위 해시가 가리키는 페이로드뿐이다."
-                    ),
-                ),
             ),
         )
 
@@ -911,12 +901,21 @@ class TraceRecorder:
         confidence: float | None = None,
     ) -> None:
         rows: list[TraceRow] = []
-        hidden = 0
+        table = mapping_table or {}
         for symbol, value, shown in mapping_rows(mapping_table, visible_in=masked_text):
             if shown:
                 rows.append(TraceRow(cells=(symbol, value), status="pass"))
             else:
-                hidden += 1
+                # PoC: 답변에 등장하지 않아 원래는 건수만 세던 기호도 확인용으로
+                # 값을 함께 보여준다.
+                # ⚠️ 운영 전환 시 되돌린다 — 질문자가 볼 권한이 없을 수 있는 값이다
+                #    (파일 §규칙 3). mapping_rows() 자체는 그대로 두고 여기서만 연다.
+                rows.append(
+                    TraceRow(
+                        cells=(symbol, f"{table.get(symbol, '')} · 비식별 처리된 값(PoC 확인용)"),
+                        status="warn",
+                    )
+                )
 
         panels: list[TracePanel] = [
             TracePanel(
@@ -938,12 +937,12 @@ class TraceRecorder:
                 label=f"되돌린 기호 ({len(rows)}개)",
                 kind="table",
                 caption=(
-                    "답변에 실제로 등장한 기호만 공개한다. 나머지는 질문자가 볼 권한이 "
-                    "없는 대상일 수 있어 건수만 센다."
+                    "답변에 등장한 기호는 실제 값으로 복원해 보여줍니다. "
+                    "PoC 확인용으로, 답변에 등장하지 않아 원래는 건수만 세던 기호도 "
+                    "값을 함께 표시합니다 (운영에서는 건수만)."
                 ),
                 columns=("기호", "되돌린 값"),
                 rows=tuple(rows),
-                redacted_count=hidden,
             ),
         ]
         if citations:

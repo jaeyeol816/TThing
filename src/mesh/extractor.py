@@ -44,14 +44,16 @@ from __future__ import annotations
 import json
 import re
 import string
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mesh.config import get_logger, log_extra
+from mesh.config import FORBIDDEN_LOG_KEYS, get_logger, log_extra
 from mesh.exceptions import ExaoneUnavailable, ExtractionFailed
 from mesh.schemas import (
     DROP,
+    STRUCTURAL_KEYS,
     Chunk,
     Mapping,
     SlotDef,
@@ -72,6 +74,76 @@ log = get_logger("extractor")
 
 #: 모델이 "문서에 없다"를 표현하는 값. 어떤 슬롯의 허용값도 아니다.
 UNKNOWN = "__unknown__"
+
+# ══════════════════════════════════════════════════════════════════════
+# 동적 스키마 생성 (PoC) — 자료 소유자 Agent 가 자체 어휘를 만든다
+# ══════════════════════════════════════════════════════════════════════
+#
+# ⚠️ **이것은 PoC 기능이고 고정 vocab.json 의 보안 보장을 약화시킨다.**
+#    고정 어휘에서는 "나갈 수 있는 값의 전체 집합"이 코드 밖(파일)에 미리
+#    확정돼 있고 U5 Lambda 가 독립 재검증한다. 동적 생성은 그 집합을 질의
+#    시점에 모델이 만들게 하므로 어휘 단계 검증이 순환이 된다.
+#
+#    그래서 **모델은 '제안'만 하고, 무엇이 경계를 넘을 수 있는지는 코드가
+#    형식으로 건다.** 생성된 것은 여전히:
+#      - 슬롯 종류는 enum/int/bool 만 (자유 문자열 슬롯 없음 — 원문 채널 차단)
+#      - enum 허용값은 **ASCII snake_case 추상 라벨만** (한글/공백/숫자/이름
+#        원문이 값이 될 수 없다). 아래 정규식이 강제한다.
+#      - 조립은 그대로 `assemble()` — 스키마를 순회하지 모델 출력을 순회하지 않음
+#      - 검증 4(금칙어)·5(n-gram)·6(크기) 단계는 동적이어도 그대로 적용된다
+#        (생성 라벨이 원문 문장이면 n-gram 이 잡고, 고객사명이면 금칙어가 잡는다)
+#
+#    남는 위험(수용됨): 추상 라벨 자체가 사실을 노출할 수 있다
+#    (예: session_binding_deferred). 형식 검사로는 의미적 노출을 못 막는다.
+
+#: 경계를 넘는 슬롯 이름 형식. 소문자로 시작하는 ASCII snake_case.
+_DYN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
+
+#: 경계를 넘는 enum 허용값 형식. ASCII snake_case 추상 라벨 — 한글·공백·문장 불가.
+_DYN_ENUM_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,39}$")
+
+#: 동적 스키마의 슬롯·enum 상한.
+_DYN_MAX_SLOTS = 8
+_DYN_MAX_ENUM = 12
+
+#: 동적 스키마의 고정 출력 계약. 모델이 정하게 하지 않는다 —
+#: answer_format 값도 경계를 넘으므로 자유 문자열을 허용하지 않는다.
+#: ⚠️ 키 이름은 FORBIDDEN_LOG_KEYS 를 피한다 — answer_format 는 페이로드에
+#:    담겨 감사 기록 스캔을 타므로 'summary'·'text' 같은 키는 감사에서 거부된다.
+_DYN_ANSWER_FORMAT: dict[str, str] = {"key_points": "string[]", "conclusion": "string"}
+
+#: 동적 스키마 라우팅용 task_schema_id 센티널. to_payload 가 이 값을 보면
+#: 고정 스키마 조회 대신 소유자 Agent 의 어휘 생성을 탄다.
+DYNAMIC_SCHEMA = "dynamic"
+
+#: 동적 스키마의 domain·question_template. per-call vocab 에 함께 등록된다.
+DYNAMIC_DOMAIN = "dynamic"
+DYNAMIC_TEMPLATE = "dynamic"
+
+GENERATE_SCHEMA_SYSTEM = (
+    "You design a STRUCTURED extraction schema for a confidential document.\n"
+    "The schema is a list of slots. Downstream code fills each slot from the\n"
+    "document and sends ONLY the filled slot values across a trust boundary —\n"
+    "never the document text. Your schema decides what abstractions may cross.\n"
+    "\n"
+    "Output a flat JSON object: {\"slots\": [ {slot}, ... ]}.\n"
+    "Each slot: {\"name\":..., \"kind\":\"enum\"|\"int\"|\"bool\", \"allowed\":[...],\n"
+    "\"min\":int, \"max\":int, \"required\":bool}.\n"
+    "\n"
+    "Hard rules (a slot breaking any rule is discarded):\n"
+    "  - name: lowercase ascii snake_case, e.g. release_phase, has_blocker.\n"
+    "  - kind is exactly one of enum / int / bool. There is NO free-text slot.\n"
+    "  - enum 'allowed': 2-12 ABSTRACT english snake_case category labels that\n"
+    "    you INVENT to classify the fact, e.g. [\"in_progress\",\"deferred\",\"done\"].\n"
+    "  - NEVER copy words, numbers, dates, names, or phrases from the document\n"
+    "    into names or allowed values. NEVER use Korean. Labels are categories,\n"
+    "    not quotes.\n"
+    "  - int: give min and max bounds. bool: no allowed.\n"
+    "  - 3-8 slots. At least one slot required:true.\n"
+    "  - Design slots that capture the ANSWER to the question at a categorical\n"
+    "    level (status, phase, presence, count-range), not verbatim content.\n"
+    "  - Output JSON only. No prose, no markdown."
+)
 
 #: 한 번의 EXAONE 호출에 담는 최대 슬롯 수 (BR-E-06).
 #: 실측: 슬롯 5개 + 원문 235 토큰 -> 0.42s. 12개까지 지연 예산 안에 들어온다.
@@ -613,3 +685,121 @@ async def extract(
         dropped_count=dropped,
         exaone_calls=calls,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 동적 스키마 생성 (PoC)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _coerce_dyn_slot(spec: object) -> SlotDef | None:
+    """모델이 제안한 슬롯 하나를 SlotDef 로 만든다. 형식에 안 맞으면 None.
+
+    ⚠️ 여기가 경계를 넘을 수 있는 것을 코드가 확정하는 지점이다.
+       모델 제안을 **믿지 않고** identifier 형식으로 건다. 한글·공백·문장·
+       숫자 원문이 이름이나 enum 값이 되는 경로를 형식으로 차단한다.
+    """
+    if not isinstance(spec, dict):
+        return None
+    name = spec.get("name")
+    kind = spec.get("kind")
+    if not isinstance(name, str) or not _DYN_NAME_RE.match(name):
+        return None
+    # 구조 키·감사 금지 키와 겹치는 슬롯 이름은 거부한다. 후자는 페이로드가
+    # 감사 스캔(BR-A-02)에서 거부되는 것을 막는다 (예: summary, text, focus).
+    if name in STRUCTURAL_KEYS or name in FORBIDDEN_LOG_KEYS:
+        return None
+    required = bool(spec.get("required", False))
+    try:
+        match kind:
+            case "enum":
+                allowed = spec.get("allowed")
+                if not isinstance(allowed, list):
+                    return None
+                vals = [
+                    a for a in allowed if isinstance(a, str) and _DYN_ENUM_RE.match(a)
+                ]
+                vals = list(dict.fromkeys(vals))[:_DYN_MAX_ENUM]
+                if len(vals) < 2:
+                    return None
+                return SlotDef(name=name, kind="enum", allowed=tuple(vals), required=required)
+            case "int":
+                lo = int(spec.get("min", 0))
+                hi = int(spec.get("max", 1_000_000))
+                if lo > hi:
+                    lo, hi = hi, lo
+                return SlotDef(name=name, kind="int", min=lo, max=hi, required=required)
+            case "bool":
+                return SlotDef(name=name, kind="bool", required=required)
+            case _:
+                return None
+    except (TypeError, ValueError):
+        return None
+
+
+async def generate_dynamic_schema(
+    chunks: Sequence[Chunk],
+    question: str,
+    exaone: ExaoneClient,
+    *,
+    owner: str,
+) -> tuple[TaskSchema, dict[str, SlotDef]]:
+    """소유자 Agent(EXAONE)가 이 질문·문서에 맞는 구조 스키마를 만든다 (PoC).
+
+    고정 vocab.json 에 해당 개념이 없을 때 `to_payload` 가 부른다. 모델은
+    슬롯(enum/int/bool)과 enum 라벨을 **제안**하고, `_coerce_dyn_slot` 이
+    identifier 형식으로 걸러 무엇이 경계를 넘을 수 있는지 확정한다.
+
+    반환: `(TaskSchema, {슬롯이름: SlotDef})`. 두 번째 값은 per-call vocab 에
+    병합돼 검증 2단계(어휘)가 생성 슬롯의 enum 값을 인정하게 한다.
+
+    Raises:
+        ExtractionFailed: 문서가 비었거나, 쓸 수 있는 슬롯이 하나도 안 나오거나,
+            EXAONE 호출 실패. 호출자는 기존대로 answer_in_zone 으로 폴백한다.
+    """
+    document = build_document(list(chunks))
+    if not document.strip():
+        raise ExtractionFailed("근거 문서가 비어 동적 스키마를 만들 수 없다")
+
+    user = f"QUESTION:\n{question}\n\nDOCUMENT:\n{document}"
+    try:
+        raw = await exaone.complete_json(
+            GENERATE_SCHEMA_SYSTEM, user, name="gen_schema", max_tokens=700
+        )
+    except ExaoneUnavailable as e:
+        raise ExtractionFailed(f"동적 스키마 생성 실패: {e}") from e
+
+    slots_raw = raw.get("slots") if isinstance(raw, dict) else None
+    if not isinstance(slots_raw, list) or not slots_raw:
+        raise ExtractionFailed("동적 스키마 응답에 슬롯이 없다")
+
+    slot_defs: list[SlotDef] = []
+    seen: set[str] = set()
+    for spec in slots_raw[:_DYN_MAX_SLOTS]:
+        sd = _coerce_dyn_slot(spec)
+        if sd is None or sd.name in seen:
+            continue
+        slot_defs.append(sd)
+        seen.add(sd.name)
+
+    if not slot_defs:
+        raise ExtractionFailed("동적 스키마의 슬롯이 모두 형식 검사에서 탈락했다")
+
+    # 최소 하나는 required — extract() 의 필수 슬롯 충족 판정이 의미를 가지려면.
+    if not any(s.required for s in slot_defs):
+        slot_defs[0] = slot_defs[0].model_copy(update={"required": True})
+
+    schema_id = f"dyn_{owner.replace(':', '_')}_{uuid.uuid4().hex[:8]}"
+    schema = TaskSchema(
+        schema_id=schema_id,
+        domain=DYNAMIC_DOMAIN,
+        question_template=DYNAMIC_TEMPLATE,
+        answer_format=dict(_DYN_ANSWER_FORMAT),
+        entity_roles=("our_component",),
+        slots=tuple(slot_defs),
+    )
+    log.info(
+        "동적 스키마 생성 (PoC) — 소유자 Agent 가 자체 어휘를 만들었다",
+        extra=log_extra(owner=owner, schema_id=schema_id, slots=len(slot_defs)),
+    )
+    return schema, {s.name: s for s in slot_defs}

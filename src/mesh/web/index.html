@@ -39,7 +39,6 @@
     <div class="thread-bar" id="thread-bar" aria-live="polite">
       <div class="thread-who" id="thread-who">
         <span class="thread-title">내 Agent</span>
-        <span class="thread-sub">질문을 맡기면 답할 수 있는 동료의 Agent 를 찾아 대신 물어봅니다</span>
       </div>
       <button type="button" class="btn btn-ghost btn-sm" id="thread-back" hidden>← 내 Agent</button>
     </div>
@@ -50,7 +49,7 @@
     <div class="chat-input-area">
       <div class="input-wrapper">
         <label class="sr-only" for="message-input">메시지 입력</label>
-        <textarea id="message-input" rows="1" placeholder="질문을 입력하세요 — 답할 수 있는 사람을 찾아드립니다"
+        <textarea id="message-input" rows="1" placeholder="메시지를 입력하세요"
                   data-testid="message-input"></textarea>
         <button type="button" class="send-btn" id="send-btn" data-testid="send-btn" disabled
                 aria-label="전송">
@@ -70,7 +69,7 @@
   <aside class="org-panel" id="org-panel">
     <div class="org-header">
       <h2 class="org-title">조직도</h2>
-      <span class="org-subtitle" id="org-subtitle">질문을 보내면 답할 수 있는 사람이 남습니다</span>
+      <span class="org-subtitle" id="org-subtitle"></span>
       <div class="org-actions">
         <button type="button" class="btn btn-ghost btn-sm" id="org-reset" hidden>전체 보기</button>
         <button type="button" class="btn btn-ghost btn-sm" id="org-refresh-btn" title="조직도 새로고침" aria-label="새로고침">
@@ -93,11 +92,6 @@
       <!-- JS가 채운다 -->
     </div>
 
-    <div class="org-footer">
-      <p class="org-note" id="org-note">
-        이름을 누르면 그 사람의 Agent 와 직접 대화합니다.
-      </p>
-    </div>
   </aside>
 
 </div>
@@ -142,19 +136,10 @@
         <button type="button" class="proto-add-btn" data-level="personal" data-owner="">+ 개인 프로토콜 추가</button>
       </div>
 
-      <div class="protocol-merged-preview">
-        <button type="button" class="btn btn-ghost btn-sm" id="show-merged-btn">현재 적용 규칙 보기</button>
-        <div id="merged-preview" class="merged-preview" hidden></div>
-      </div>
     </div>
 
     <!-- 오른쪽: 편집 폼 -->
     <div class="protocol-editor" id="protocol-editor">
-      <div class="editor-empty" id="editor-empty">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <p>왼쪽에서 프로토콜을 선택하거나 새로 추가하세요</p>
-      </div>
-
       <form id="protocol-form" class="proto-form" hidden>
         <div class="proto-form-head">
           <div>

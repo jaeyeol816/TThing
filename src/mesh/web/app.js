@@ -277,12 +277,6 @@ const DISPOSITION = {
   blocked:    { label: "전송하지 않았습니다", kind: "bad" },
 };
 
-const ACTIVITY = {
-  active:  { label: "활동 중", dot: "dot-active" },
-  away:    { label: "자리 비움", dot: "dot-away" },
-  offline: { label: "오프라인", dot: "dot-offline" },
-};
-
 const STAGE = {
   schema: "스키마", vocab: "어휘", range: "범위",
   banned: "금칙어", ngram: "원문대조", size: "크기",
@@ -391,13 +385,9 @@ function renderThreadBar() {
       el("span", { text: "내 Agent" }),
       el("span", { class: "rank-badge", text: myName() }),
     ]));
-    who.appendChild(el("span", {
-      class: "thread-sub",
-      text: "질문을 맡기면 답할 수 있는 동료의 Agent 를 찾아 대신 물어보고 정리해 드립니다",
-    }));
-    $("message-input").placeholder = "질문을 입력하세요 — 제가 대신 물어보겠습니다";
+    $("message-input").placeholder = "메시지를 입력하세요";
     $("input-hint").textContent =
-      "Enter 전송 · Shift+Enter 줄바꿈 · 질문은 전원의 Agent 에게 방송됩니다";
+      "Enter 전송 · Shift+Enter 줄바꿈";
     return;
   }
 
@@ -425,7 +415,7 @@ function renderThreadBar() {
 
   $("message-input").placeholder =
     `${agent ? agent.display_name : "이 사람"}의 Agent 에게 직접 질문하기`;
-  $("input-hint").textContent = "Enter 전송 · Shift+Enter 줄바꿈 · 이 사람에게만 전달됩니다";
+  $("input-hint").textContent = "Enter 전송 · Shift+Enter 줄바꿈";
 }
 
 function renderThread() {
@@ -445,30 +435,15 @@ function emptyState() {
   const box = el("div", { class: "empty-state" });
   if (state.activeThread === MY_AGENT) {
     box.appendChild(el("p", { class: "empty-title", text: `${myName()}님의 Agent 입니다` }));
-    box.appendChild(para(
-      "무엇이든 물어보세요. 질문을 **모든 동료의 Agent 에게 방송**해 답할 수 있는 " +
-      "사람을 찾고, 그 사람들의 Agent 에게 대신 물어본 뒤 하나로 정리해 드립니다.",
-      "empty-body",
-    ));
-    box.appendChild(para(
-      "찾는 단계에서는 문서를 읽지 않고 경계를 넘는 것도 없습니다. " +
-      "특정한 사람에게 직접 묻고 싶으면 오른쪽 조직도에서 이름을 누르세요.",
-      "empty-body",
-    ));
   } else {
     const agent = state.agentsById[state.activeThread];
     box.appendChild(el("p", {
       class: "empty-title",
-      text: `${agent ? agent.display_name : "이 사람"}의 Agent`,
+      text: `${agent ? agent.display_name : "이 사람"}의 Agent 입니다`,
     }));
-    box.appendChild(para(
-      "질문을 입력하면 이 사람의 세션에서 근거를 찾아 게이트키퍼를 통과시킨 뒤 답합니다. " +
-      "**본인을 깨우지 않습니다.**",
-      "empty-body",
-    ));
   }
   return box;
-}
+} 
 
 function renderMessage(message) {
   switch (message.kind) {
@@ -584,7 +559,7 @@ function consultHeader(result) {
   if (bc) {
     const relevant = bc.results.filter((r) => r.relevant);
     box.appendChild(para(
-      `**${bc.results.length}명**의 Agent 에게 질문을 방송했고, ` +
+      `**${bc.results.length}명**의 Agent 에게 질문을 전달했고, ` +
       `**${relevant.length}명**이 답할 수 있다고 판단했습니다.`,
       "consult-line",
     ));
@@ -608,19 +583,14 @@ function consultHeader(result) {
 
   if (result.skipped && result.skipped.length > 0) {
     box.appendChild(para(
-      `후보였지만 이번에 묻지 않은 사람: ${result.skipped.map(nameOf).join(", ")} — ` +
-      "이름을 눌러 직접 물어볼 수 있습니다.",
+      `이번엔 묻지 않았지만 후보였던 분: ${result.skipped.map(nameOf).join(", ")}. ` +
+      "이름을 누르면 직접 물어볼 수 있어요.",
       "consult-note",
     ));
   }
 
   const meta = el("div", { class: "consult-meta" });
-  meta.appendChild(badge(
-    result.digest_source === "model" ? "정리: 신뢰 구역 모델" : "정리: 코드가 조립",
-    "accent",
-  ));
-  meta.appendChild(badge("정리는 경계를 넘지 않았음", "ok"));
-  if (bc && !bc.model_used) meta.appendChild(badge("선별은 규칙만으로", "warn"));
+  if (bc && !bc.model_used) meta.appendChild(badge("규칙으로만 선별", "warn"));
   if (result.elapsed_seconds) {
     meta.appendChild(badge(`${result.elapsed_seconds.toFixed(1)}초`, "muted"));
   }
@@ -638,7 +608,7 @@ function answerCard(answer) {
     badge(`신뢰도 ${Number(answer.confidence).toFixed(2)}`, "muted"),
   ]);
   if (!answer.used_external_agent) {
-    head.appendChild(badge("사내망 밖으로 나간 것 없음", "ok"));
+    head.appendChild(badge("사내망 밖으로 유출된 내용 없음", "ok"));
   }
   head.appendChild(el("button", {
     class: "answer-card-open",
@@ -670,7 +640,7 @@ function citationsRow(answer) {
   if (answer.unresolved_refs && answer.unresolved_refs.length > 0) {
     box.appendChild(el("p", {
       class: "answer-warn",
-      text: `되돌리지 못한 참조 기호 ${answer.unresolved_refs.length}개가 남아 있습니다 (그대로 표시).`,
+      text: `복원하지 못한 기호 ${answer.unresolved_refs.length}개가 그대로 남아 있어요.`,
     }));
   }
   return box;
@@ -788,8 +758,6 @@ function memberCard(entityId) {
   const active = isMe ? state.activeThread === MY_AGENT : state.activeThread === entityId;
   const blocked = !isMe && a.daily_limit_reached;
 
-  const act = ACTIVITY[a.activity_status] || null;
-
   const classes = ["org-card"];
   if (hasVerdict && rel.relevant) classes.push("is-relevant");
   if (dimmed) classes.push("is-dimmed");
@@ -805,16 +773,6 @@ function memberCard(entityId) {
     ]),
     el("div", { class: "org-role", text: isMe ? "내 Agent 와 대화합니다" : (a.org_title || a.expertise || "") }),
   ]);
-
-  if (act && !isMe) {
-    info.appendChild(el("div", { class: "org-status" }, [
-      el("span", { class: `dot ${act.dot}` }),
-      el("span", { text: act.label }),
-      a.current_focus_summary
-        ? el("span", { class: "org-focus", text: `· ${a.current_focus_summary}` })
-        : null,
-    ]));
-  }
 
   if (hasVerdict && rel.relevant) {
     info.appendChild(el("div", { class: "org-verdict", text: rel.reason }));
@@ -847,7 +805,7 @@ function memberCard(entityId) {
 function startWave() {
   const panel = $("org-panel");
   panel.classList.add("broadcasting");
-  $("org-subtitle").textContent = "전원의 Agent 에게 질문을 보내는 중…";
+  $("org-subtitle").textContent = "모든 Agent 에게 질문을 보내는 중…";
 
   // 카드마다 시차를 둬 파동이 퍼지는 것처럼 보이게 한다.
   // 인라인 style 속성이 아니라 JS 로 지정한다 — HTML 에 style= 를 쓰지 않는다.
@@ -874,8 +832,8 @@ function applyBroadcast(result) {
 
   const relevant = result.results.filter((r) => r.relevant).length;
   $("org-subtitle").textContent = relevant > 0
-    ? `${relevant}명이 답할 수 있다고 판단했습니다`
-    : "겹치는 담당 영역을 찾지 못했습니다 — 전체 보기로 직접 고를 수 있습니다";
+    ? `${relevant}명이 답할 수 있을 것 같아요`
+    : "겹치는 담당자를 찾지 못했어요. 전체 보기에서 직접 고를 수 있습니다";
   $("org-reset").hidden = false;
   renderOrgTree();
 }
@@ -883,7 +841,7 @@ function applyBroadcast(result) {
 function resetBroadcast() {
   state.broadcast = null;
   state.relevance = {};
-  $("org-subtitle").textContent = "질문을 보내면 답할 수 있는 사람이 남습니다";
+  $("org-subtitle").textContent = "";
   $("org-reset").hidden = true;
   renderOrgTree();
 }
@@ -896,7 +854,6 @@ function resetBroadcast() {
 async function doConsult(question) {
   pushMessage(MY_AGENT, { kind: "user", text: question, hint: "→ 내 Agent" });
 
-  startWave();
   const loading = addLoadingMessage("내 Agent");
   const startedAt = Date.now();
 
@@ -906,13 +863,18 @@ async function doConsult(question) {
       body: { question, asker: state.me.entity_id },
     });
 
-    // 응답이 즉시 와도 파동은 끝까지 보여준다 — 무엇이 일어났는지가 보여야 한다.
-    const elapsed = Date.now() - startedAt;
-    if (elapsed < WAVE_MIN_MS) await sleep(WAVE_MIN_MS - elapsed);
+    // 조직도 파동은 **실제로 방송했을 때만** 보여준다. 내 Agent 가 혼자
+    // 답했거나 특정 인원만 지목한 경우엔 방송이 없으므로 파동도 없다.
+    if (result.broadcast) {
+      startWave();
+      // 응답이 즉시 와도 파동은 잠깐 보여준다 — 무엇이 일어났는지가 보여야 한다.
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < WAVE_MIN_MS) await sleep(WAVE_MIN_MS - elapsed);
+      stopWave();
+      applyBroadcast(result.broadcast);
+    }
 
     removeMessage(loading);
-    stopWave();
-    if (result.broadcast) applyBroadcast(result.broadcast);
     pushMessage(MY_AGENT, { kind: "digest", result });
   } catch (err) {
     removeMessage(loading);
@@ -1050,10 +1012,10 @@ function buildTraceBlock(message) {
   const strip = el("div", { class: "gk-strip" });
 
   const status = message.dispositionKey === "blocked"
-    ? { text: "경계를 넘지 않았습니다", kind: "bad" }
+    ? { text: "보안성 문제가 발생할 수 있어 Agent에게 전달하지 않았습니다.", kind: "bad" }
     : message.tier === "secret"
       ? { text: "구조만 추출해 내보냈습니다", kind: "warn" }
-      : { text: "검증을 통과해 내보냈습니다", kind: "ok" };
+      : { text: "보안성 검토를 통과해 Agent에게 전달하였습니다", kind: "ok" };
 
   strip.appendChild(el("span", { class: "gk-strip-label", text: "게이트키퍼" }));
   strip.appendChild(badge(status.text, status.kind));
@@ -1113,7 +1075,7 @@ function renderTrace(trace, tabs, panels) {
   if (trace.agent_label) meta.appendChild(badge(trace.agent_label, "muted"));
   if (trace.tier) meta.appendChild(tierBadge(trace.tier));
   meta.appendChild(badge(
-    trace.crossed_boundary ? "경계를 넘었음" : "경계를 넘지 않음",
+    trace.crossed_boundary ? "Agent에게 전달 됨" : "Agent에게 전달되지 않음",
     trace.crossed_boundary ? "warn" : "ok",
   ));
   sub.appendChild(meta);
@@ -1153,7 +1115,7 @@ function renderTrace(trace, tabs, panels) {
 
     // 경계는 눈에 보이는 선이어야 한다. 위는 노트북 안, 아래는 바깥이다.
     if (stage.crosses_boundary) {
-      tabs.appendChild(el("span", { class: "trace-boundary", text: "신뢰 경계" }));
+      tabs.appendChild(el("span", { class: "trace-boundary", text: "사내망 경계" }));
     }
   });
 
@@ -1213,7 +1175,7 @@ function renderPanel(panel) {
   if (panel.redacted_count > 0) {
     box.appendChild(el("div", {
       class: "trace-redacted",
-      text: `${panel.redacted_count}건은 값을 싣지 않았습니다 — 숨겼다는 사실은 숨기지 않습니다.`,
+      text: `값을 감춘 항목이 ${panel.redacted_count}건 있어요. 값은 보여드리지 않고 건수만 표시합니다.`,
     }));
   }
   return box;
@@ -1400,7 +1362,6 @@ function openProtoEditor(proto) {
   _editingLevel = proto.level;
   _editingOwner = proto.owner;
 
-  $("editor-empty").hidden = true;
   $("protocol-form").hidden = false;
 
   const levelBadge = $("form-level-badge");
@@ -1490,40 +1451,10 @@ async function deleteProto() {
     await api(`/api/protocols/${_editingLevel}/${encodeURIComponent(_editingOwner)}`, { method: "DELETE" });
     _editingLevel = null;
     _editingOwner = null;
-    $("editor-empty").hidden = false;
     $("protocol-form").hidden = true;
     await loadProtocols();
   } catch (err) {
     alert(`삭제 실패: ${err.message}`);
-  }
-}
-
-async function showMergedPreview() {
-  const box = $("merged-preview");
-  if (!box.hidden) { box.hidden = true; return; }
-  try {
-    const merged = await api("/api/protocols-merged");
-    clear(box);
-
-    const addSection = (label, items) => {
-      if (!items || items.length === 0) return;
-      const sec = el("div", { class: "merged-preview-section" });
-      sec.appendChild(el("div", { class: "merged-preview-label", text: label }));
-      items.slice(0, 8).forEach((item) => {
-        sec.appendChild(el("div", { class: "merged-preview-item", text: item }));
-      });
-      if (items.length > 8) {
-        sec.appendChild(el("div", { class: "merged-preview-item", text: `… 외 ${items.length - 8}개` }));
-      }
-      box.appendChild(sec);
-    };
-
-    addSection("키워드", merged.secret_keywords);
-    addSection("패턴", merged.secret_patterns);
-    addSection("SECRET 경로", merged.secret_path_globs);
-    box.hidden = false;
-  } catch (err) {
-    alert(`불러오기 실패: ${err.message}`);
   }
 }
 
@@ -1540,7 +1471,6 @@ function wireProtocol() {
   on("protocol-modal", "cancel", closeProtocolModal);
   on("protocol-form", "submit", saveProto);
   on("proto-delete-btn", "click", deleteProto);
-  on("show-merged-btn", "click", showMergedPreview);
 
   document.querySelectorAll(".proto-add-btn").forEach((btn) => {
     btn.addEventListener("click", () => {

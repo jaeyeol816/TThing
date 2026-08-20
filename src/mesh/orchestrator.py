@@ -118,6 +118,52 @@ log = get_logger("orchestrator")
 #: 근거: 요구사항의 "질문 하나가 20분을 먹는다". 추정값이며 화면에 추정임을 표시한다.
 MINUTES_PER_INTERRUPT = 20
 
+#: 이 신뢰도 미만의 답변은 "관련 없음" 으로 보고 취합에서 뺀다 (기획서 §4.4).
+#: 문서를 열어봤지만 질문과 무관한 자료뿐인 Agent 는 낮은 신뢰도로 답한다.
+#: asker 자신의 답변에는 적용하지 않는다.
+#: ⚠️ 신뢰도만으로는 부족하다 — "이건 제 담당이 아닙니다" 라고 **확신에 차서**
+#:    답하면 신뢰도가 높게(0.7+) 나온다. 그래서 아래 텍스트 신호를 함께 본다.
+IRRELEVANT_CONFIDENCE = 0.15
+
+#: "문서를 봤지만 이 질문에 답할 자료가 없다" 는 답변에서 반복적으로 나오는 표현.
+#: 이 표현이 답변에 들어 있으면 신뢰도와 무관하게 "관련 없음" 으로 본다.
+#: 근거: 관련 없는 Agent 는 "제공된 문서에는 ~ 없습니다" 를 확신에 차서 답한다.
+_IRRELEVANT_MARKERS: tuple[str, ...] = (
+    "포함되어 있지 않",
+    "포함하고 있지 않",
+    "포함되지 않",
+    "제공된 문서에는",
+    "제공된 문서가",
+    "제공된 문서는",
+    "문서가 제공되지 않",
+    "해당 내용이 없",
+    "관련 내용이 없",
+    "관련 자료",
+    "담당 영역이 아니",
+    "담당이 아니",
+    "다루고 있지 않",
+    "다루지 않",
+    "찾을 수 없",
+    "추출할 수 없",
+    "구조 추출 실패",
+    "어휘 사전에 해당",
+    "context에 포함",
+    "컨텍스트에 포함",
+)
+
+
+def _looks_irrelevant(text: str | None) -> bool:
+    """답변 텍스트가 "이 질문에 답할 자료가 없다" 류인지 본다.
+
+    신뢰도 필터(`IRRELEVANT_CONFIDENCE`)를 보완한다. 관련 없는 Agent 는
+    자기 문서에 없다는 걸 **확신에 차서** 답하기 때문에 신뢰도가 오히려
+    높게 나온다 (예: 오세영 0.76). 그래서 내용을 함께 본다.
+    """
+    if not text:
+        return True
+    return any(marker in text for marker in _IRRELEVANT_MARKERS)
+
+
 DIVERGENCE_NOTE = (
     "둘 다 사실일 수 있습니다. 시점이 {gap} 차이이고 문서 성격이 다릅니다. "
     "어느 쪽이 현재 유효한지는 담당자 확인이 필요합니다."
@@ -539,10 +585,78 @@ class Orchestrator:
         limit = min(request.max_targets, self.cfg.consult_max_targets)
 
         broadcast: BroadcastResult | None = None
+
         if request.targets:
+            # 사용자가 직접 고른 경우 — 선별을 건너뛰고 그 사람들에게만 묻는다.
             chosen = list(request.targets)[:limit]
             skipped = list(request.targets)[limit:]
         else:
+            # ── 1단계: 내 Agent 가 먼저 스스로 답할 수 있는지 본다 ──────────
+            #
+            # 기획서 §4.3: "스스로 해결할 수 있는 쿼리는 스스로 해결한다.
+            # 스스로 해결할 수 없는 쿼리만 broadcasting 한다."
+            #
+            # 내 세션에 읽을 근거가 있으면 먼저 나 혼자 답해 보고, 그 답이
+            # 자동 응답(AUTO — 인용 있고 신뢰도 높음) 수준이면 broadcast 를
+            # 하지 않는다. 부족할 때만 다른 사람에게 뿌린다.
+            self_answer: AskResult | None = None
+            try:
+                _session = self.store.load_session(request.asker)
+                if self.store.candidate_paths(_session):
+                    self_answer = await self._consult_one(request, request.asker)
+            except Exception as e:  # noqa: BLE001 — 세션 없거나 실패하면 broadcast 로 간다
+                log.info(
+                    "자기 답변 시도 실패 — broadcast 로 진행",
+                    extra=log_extra(asker=request.asker, reason=type(e).__name__),
+                )
+
+            self_sufficient = (
+                self_answer is not None
+                and self_answer.merged.answers
+                # ⚠️ AUTO(인용+높은 신뢰도) 를 요구하지 않는다. 내 로드맵을
+                #    passthrough(구조 추출 없이 원문 전달)로 답하면 인용이
+                #    0개라 AUTO 가 절대 안 나온다. 그러면 혼자 답할 수 있는
+                #    질문도 매번 broadcast 로 샜다.
+                #    대신: (1) 내 답이 "관련 없음" 이 아니고
+                #          (2) 에스컬레이션 문턱 이상 신뢰도면 충분하다고 본다.
+                and not any(_looks_irrelevant(a.text) for a in self_answer.merged.answers)
+                and min(
+                    (a.confidence for a in self_answer.merged.answers),
+                    default=0.0,
+                )
+                >= self.cfg.confidence_escalate
+            )
+
+            if self_sufficient:
+                # 내 Agent 만으로 충분하다 — broadcast 를 건너뛴다.
+                answers = list(self_answer.merged.answers)
+                merged = self_answer.merged
+                digest, source = await self.gatekeeper.synthesize_in_zone(
+                    request.question, answers
+                )
+                auto_count = sum(1 for a in answers if a.used_external_agent)
+                log.info(
+                    "내 Agent 로 충분 — broadcast 생략",
+                    extra=log_extra(asker=request.asker),
+                )
+                return ConsultResult(
+                    request_id=new_request_id(),
+                    question=request.question,
+                    broadcast=None,
+                    digest=digest,
+                    digest_source=source,
+                    answers=merged.answers,
+                    divergent=merged.divergent,
+                    divergence_note=merged.divergence_note,
+                    escalations=tuple(self_answer.escalations),
+                    consulted=(request.asker,),
+                    skipped=(),
+                    elapsed_seconds=round(time.monotonic() - started, 3),
+                    interrupts_avoided=auto_count,
+                    minutes_saved_estimate=auto_count * MINUTES_PER_INTERRUPT,
+                )
+
+            # ── 2단계: 부족하다 — broadcast 로 도움을 요청한다 ─────────────
             broadcast = await self.broadcast(
                 BroadcastRequest(
                     question=request.question,
@@ -552,6 +666,11 @@ class Orchestrator:
             )
             relevant = [r.entity_id for r in broadcast.results if r.relevant]
             chosen, skipped = relevant[:limit], relevant[limit:]
+
+            # 내 Agent 도 부분 답을 냈다면 결과에 포함한다 (맨 앞).
+            if self_answer is not None and self_answer.merged.answers:
+                if request.asker not in chosen:
+                    chosen = [request.asker, *chosen][:limit]
 
         if not chosen:
             return ConsultResult(
@@ -577,6 +696,8 @@ class Orchestrator:
         answers: list[RehydratedAnswer] = []
         escalations: list[str] = []
         failed: list[str] = []
+        irrelevant: list[str] = []
+        answered_ids: list[str] = []
         for target, outcome in zip(chosen, outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 log.warning(
@@ -585,12 +706,31 @@ class Orchestrator:
                 )
                 failed.append(target)
                 continue
-            answers.extend(outcome.merged.answers)
+
+            # ⚠️ "관련 없음" 답변 필터 (기획서 §4.4).
+            #    문서를 열어봤지만 이 질문에 답할 자료가 없는 경우, Agent 는
+            #    낮은 신뢰도로 "관련 자료 없음" 을 낸다. 그 답을 취합에 넣으면
+            #    "한지우 연구원: 로드맵 문서가 없습니다" 같은 잡음이 digest 를
+            #    채운다. asker 자신은 예외 — 내 Agent 답변은 신뢰도와 무관하게 남긴다.
+            kept = []
+            for a in outcome.merged.answers:
+                # asker 자신의 답변은 신뢰도/내용과 무관하게 남긴다.
+                # 그 외에는 신뢰도가 아주 낮거나(0.15 미만) 텍스트가
+                # "이 질문에 답할 자료가 없다" 류면 취합에서 뺀다.
+                if target != request.asker and (
+                    a.confidence < IRRELEVANT_CONFIDENCE or _looks_irrelevant(a.text)
+                ):
+                    irrelevant.append(target)
+                else:
+                    kept.append(a)
+            if kept:
+                answers.extend(kept)
+                answered_ids.append(target)
             escalations.extend(outcome.escalations)
 
         merged = merge(
             answers,
-            order=tuple(chosen),
+            order=tuple(answered_ids),
             auto=self.cfg.confidence_auto,
             escalate=self.cfg.confidence_escalate,
         )
@@ -598,10 +738,19 @@ class Orchestrator:
             digest, source = await self.gatekeeper.synthesize_in_zone(
                 request.question, merged.answers
             )
+        elif irrelevant and not failed:
+            # 후보들이 문서를 열어봤지만 **아무도 관련 자료가 없었다.**
+            # "답을 못 받았다" 와 다르다 — 물었고, 답했고, 관련이 없었던 것이다.
+            names = ", ".join(self._display_name(t) for t in dict.fromkeys(irrelevant))
+            digest, source = (
+                f"{names}의 Agent 에게 물었지만, 이 질문에 답할 관련 자료를 "
+                "가진 사람이 없었습니다.\n\n"
+                "질문에 다루는 주제를 한 단어 더 넣거나, 조직도에서 직접 골라 보십시오.",
+                "code",
+            )
         else:
             # 후보는 찾았는데 **한 명도 답을 주지 못한** 경우다. "찾지 못했습니다"
             # 라고 말하면 거짓이 된다 — 찾긴 찾았고 물었는데 실패한 것이다.
-            # 둘을 뭉뚱그리면 사용자가 질문을 고쳐 쓰는 헛수고를 한다.
             names = ", ".join(self._display_name(t) for t in chosen)
             digest, source = (
                 f"{names}의 Agent 에게 물었지만 답을 받지 못했습니다.\n\n"
@@ -620,7 +769,7 @@ class Orchestrator:
             divergent=merged.divergent,
             divergence_note=merged.divergence_note,
             escalations=tuple(escalations),
-            consulted=tuple(chosen),
+            consulted=tuple(answered_ids),
             skipped=tuple(skipped),
             elapsed_seconds=round(time.monotonic() - started, 3),
             interrupts_avoided=auto_count,
@@ -971,80 +1120,100 @@ class Orchestrator:
             call = calls[0]
         except ExtractionFailed:
             # plan_calls에서 choose_schema 실패 — 스키마 매칭 안 됨
+            from mesh.extractor import DYNAMIC_SCHEMA
+            from mesh.schemas import AgentCall
+
             tiers = [q_tier.tier, *[(c.tier or Tier.INTERNAL) for c in classified]]
             effective_tier = max(tiers)
             if effective_tier is Tier.SECRET:
-                raise  # SECRET은 구조 추출 필수
-            log.info(
-                "스키마 매칭 실패 → passthrough 경로 전환",
-                extra=log_extra(target=target, tier=effective_tier.value),
-            )
-            from mesh.schemas import AgentCall
-            call = AgentCall(
-                call_id=f"call_{uuid.uuid4().hex[:16]}",
-                entity_id=target,
-                tier=effective_tier,
-                task_schema_id="passthrough",
-                chunk_ids=tuple(c.chunk_id for c in classified),
-            )
-            env, mapping = self.gatekeeper.to_payload_passthrough(
-                call, classified, request.question
-            )
-            originals = tuple(c.text for c in classified)
-            # passthrough는 간소화된 검증만 적용
-            env = env.model_copy(update={"validation": passthrough_validation()})
-            preview = self.gatekeeper.preview(env, originals)
+                # PoC: 고정 어휘에 맞는 task 가 없다 → fail closed 대신 소유자 Agent 가
+                # 자체 구조 어휘를 생성하는 동적 경로로 넘긴다. call 만 세우고 아래
+                # 공통 to_payload 경로로 진행한다 (to_payload 가 DYNAMIC 을 처리).
+                log.info(
+                    "스키마 매칭 실패(기밀) → 소유자 Agent 동적 어휘 경로 (PoC)",
+                    extra=log_extra(target=target, tier=effective_tier.value),
+                )
+                call = AgentCall(
+                    call_id=f"call_{uuid.uuid4().hex[:16]}",
+                    entity_id=target,
+                    tier=effective_tier,
+                    task_schema_id=DYNAMIC_SCHEMA,
+                    chunk_ids=tuple(c.chunk_id for c in classified),
+                )
+                # ⚠️ return 하지 않는다 — 아래 Hook B 경로가 이 call 을 처리한다.
+            else:
+                log.info(
+                    "스키마 매칭 실패 → passthrough 경로 전환",
+                    extra=log_extra(target=target, tier=effective_tier.value),
+                )
+                call = AgentCall(
+                    call_id=f"call_{uuid.uuid4().hex[:16]}",
+                    entity_id=target,
+                    tier=effective_tier,
+                    task_schema_id="passthrough",
+                    chunk_ids=tuple(c.chunk_id for c in classified),
+                )
+                env, mapping = self.gatekeeper.to_payload_passthrough(
+                    call, classified, request.question
+                )
+                originals = tuple(c.text for c in classified)
+                # passthrough는 간소화된 검증만 적용
+                env = env.model_copy(update={"validation": passthrough_validation()})
+                preview = self.gatekeeper.preview(env, originals)
 
-            if rec:
-                rec.add_transform(
-                    env=env,
-                    mapping_table=dict(mapping.table),
-                    extraction_note=(
-                        "어휘 사전에 맞는 task 스키마가 없어 **슬롯 채우기를 건너뛰었다.** "
-                        "질문과 근거를 그대로 담되 등급이 사내면 식별자를 치환한다. "
-                        "⚠️ 이 경로는 기밀 등급에서 절대 쓰이지 않는다 — 기밀은 구조 추출이 "
-                        "성공해야만 나간다."
+                if rec:
+                    rec.add_transform(
+                        env=env,
+                        mapping_table=dict(mapping.table),
+                        extraction_note=(
+                            "어휘 사전에 맞는 task 스키마가 없어 **슬롯 채우기를 건너뛰었다.** "
+                            "질문과 근거를 그대로 담되 등급이 사내면 식별자를 치환한다. "
+                            "⚠️ 이 경로는 기밀 등급에서 절대 쓰이지 않는다 — 기밀은 구조 추출이 "
+                            "성공해야만 나간다."
+                        ),
+                    )
+                    rec.add_validate(
+                        result=env.validation,
+                        verbatim_count=preview.verbatim_sentence_count,
+                    )
+
+                self.gatekeeper.cache.put(env, mapping, originals, target)
+                pending.calls.append(
+                    PendingCall(
+                        envelope_id=env.envelope_id,
+                        target_entity_id=target,
+                        chunks=classified,
+                        session_facts=facts,
+                        freshness=fresh,
+                        confidence_factor=factor,
+                        trace=rec,
+                    )
+                )
+
+                tier_note = (
+                    (call.tier, f"{q_tier.tier.label_ko} 질문에 {call.tier.label_ko} 근거가 동원됐습니다")
+                    if call.tier is not q_tier.tier
+                    else None
+                )
+
+                return (
+                    PreparedCall(
+                        envelope_id=env.envelope_id,
+                        target_entity_id=target,
+                        agent_label=persona.agent_label,
+                        sub_question=SubQuestionView(
+                            id=call.call_id,
+                            kind="passthrough",
+                            text=request.question,
+                            tier=call.tier,
+                        ),
+                        tier=call.tier,
+                        disposition="ready",
+                        preview=preview,
+                        trace_id=self._keep_trace(rec),
                     ),
+                    tier_note,
                 )
-                rec.add_validate(
-                    result=env.validation,
-                    verbatim_count=preview.verbatim_sentence_count,
-                )
-
-            self.gatekeeper.cache.put(env, mapping, originals, target)
-            pending.calls.append(
-                PendingCall(
-                    envelope_id=env.envelope_id,
-                    target_entity_id=target,
-                    chunks=classified,
-                    session_facts=facts,
-                    freshness=fresh,
-                    confidence_factor=factor,
-                    trace=rec,
-                )
-            )
-
-            tier_note = (
-                (call.tier, f"{q_tier.tier.label_ko} 질문에 {call.tier.label_ko} 근거가 동원됐습니다")
-                if call.tier is not q_tier.tier
-                else None
-            )
-
-            return (
-                PreparedCall(
-                    envelope_id=env.envelope_id,
-                    target_entity_id=target,
-                    agent_label=persona.agent_label,
-                    sub_question=SubQuestionView(
-                        id=call.call_id, kind="passthrough", text=request.question, tier=call.tier
-                    ),
-                    tier=call.tier,
-                    disposition="ready",
-                    preview=preview,
-                    trace_id=self._keep_trace(rec),
-                ),
-                tier_note,
-            )
 
         tier_note = (
             (call.tier, f"{q_tier.tier.label_ko} 질문에 {call.tier.label_ko} 근거가 동원됐습니다")
@@ -1060,31 +1229,57 @@ class Orchestrator:
             env, mapping = await self.gatekeeper.to_payload(call, classified, request.question)
         except ExtractionFailed:
             if call.tier is Tier.SECRET:
-                if rec:
-                    rec.add_blocked(
-                        stage_id="transform",
-                        reason="구조 추출 실패 — 기밀은 원문으로 나가지 않는다",
-                        detail=(
-                            "필수 슬롯을 어휘 사전 안의 값으로 채우지 못했다. 기밀 등급에서는 "
-                            "대체 경로가 없다 — 원문을 그대로 보내는 것이 유일한 대안인데 "
-                            "그것이 정확히 이 시스템이 막으려는 것이다 (fail closed)."
-                        ),
+                from mesh.extractor import DYNAMIC_SCHEMA
+
+                # PoC: 고정 스키마 추출이 실패했으면 소유자 Agent 가 자체 어휘를
+                # 생성해 한 번 재시도한다. 이미 동적 경로였는데도 실패했으면
+                # 대체 경로가 없다 — fail closed (원문은 절대 나가지 않는다).
+                dyn_ok = False
+                if call.task_schema_id != DYNAMIC_SCHEMA:
+                    log.info(
+                        "구조 추출 실패(기밀) → 소유자 Agent 동적 어휘 재시도 (PoC)",
+                        extra=log_extra(target=target),
                     )
-                    self._keep_trace(rec)
-                raise  # SECRET은 구조 추출 필수 — 원문 유출 방지
-            # INTERNAL/OPEN: 구조 추출 없이 직접 전달
-            log.info(
-                "구조 추출 실패 → passthrough 경로 전환",
-                extra=log_extra(target=target, tier=call.tier.value),
-            )
-            extraction_note = (
-                "구조 추출이 실패해 passthrough 로 전환했다 — 슬롯을 어휘 사전 안의 값으로 "
-                "채우지 못했다는 뜻이다. 사내 등급이므로 식별자 치환을 거쳐 나간다. "
-                "⚠️ 기밀 등급이었다면 여기서 전송이 멈춘다."
-            )
-            env, mapping = self.gatekeeper.to_payload_passthrough(
-                call, classified, request.question
-            )
+                    try:
+                        call = call.model_copy(update={"task_schema_id": DYNAMIC_SCHEMA})
+                        env, mapping = await self.gatekeeper.to_payload(
+                            call, classified, request.question
+                        )
+                        extraction_note = (
+                            "고정 어휘에 이 질문에 맞는 항목이 없어 **소유자 Agent 가 이 질문용 "
+                            "구조 어휘를 생성**해 구조 추출했다 (PoC). 슬롯은 enum/int/bool 만, "
+                            "값은 추상 라벨만 경계를 넘는다."
+                        )
+                        dyn_ok = True
+                    except ExtractionFailed:
+                        dyn_ok = False
+                if not dyn_ok:
+                    if rec:
+                        rec.add_blocked(
+                            stage_id="transform",
+                            reason="구조 추출 실패 — 기밀은 원문으로 나가지 않는다",
+                            detail=(
+                                "소유자 Agent 의 동적 어휘 생성으로도 필수 슬롯을 채우지 "
+                                "못했다. 기밀 등급에서는 원문을 그대로 보내는 것이 유일한 "
+                                "대안인데 그것이 정확히 이 시스템이 막으려는 것이다 (fail closed)."
+                            ),
+                        )
+                        self._keep_trace(rec)
+                    raise  # SECRET은 구조 추출 필수 — 원문 유출 방지
+            else:
+                # INTERNAL/OPEN: 구조 추출 없이 직접 전달
+                log.info(
+                    "구조 추출 실패 → passthrough 경로 전환",
+                    extra=log_extra(target=target, tier=call.tier.value),
+                )
+                extraction_note = (
+                    "구조 추출이 실패해 passthrough 로 전환했다 — 슬롯을 어휘 사전 안의 값으로 "
+                    "채우지 못했다는 뜻이다. 사내 등급이므로 식별자 치환을 거쳐 나간다. "
+                    "⚠️ 기밀 등급이었다면 여기서 전송이 멈춘다."
+                )
+                env, mapping = self.gatekeeper.to_payload_passthrough(
+                    call, classified, request.question
+                )
         originals = tuple(c.text for c in classified)
         if rec:
             rec.add_transform(

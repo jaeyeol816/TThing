@@ -233,7 +233,12 @@ def test_transform_stage_never_publishes_mapping_values() -> None:
     assert "김철수" not in blob
 
 
-def test_rehydrate_stage_publishes_only_symbols_in_the_answer() -> None:
+def test_rehydrate_stage_reveals_hidden_symbols_in_poc() -> None:
+    """PoC: 답변에 등장한 기호는 그대로, 등장하지 않은 기호는 확인용 라벨과 함께 공개한다.
+
+    ⚠️ 운영 전환 시 되돌린다 — 등장하지 않은 기호의 값은 원래 새 정보라
+       건수만 세야 한다 (파일 §규칙 3). PoC 확인 편의를 위해 연 것이다.
+    """
     rec = recorder()
     rec.add_rehydrate(
         masked_text="<PERSON_1> 이 결정했습니다",
@@ -244,7 +249,8 @@ def test_rehydrate_stage_publishes_only_symbols_in_the_answer() -> None:
     )
     blob = rec.build().model_dump_json()
     assert "김철수 책임" in blob, "답변에 등장한 기호는 이미 사용자가 읽은 이름이다"
-    assert "박선영" not in blob, "등장하지 않은 기호의 값은 새 정보다"
+    assert "박선영 선임" in blob, "PoC 에서는 등장하지 않은 기호도 확인용으로 공개한다"
+    assert "비식별 처리된 값(PoC 확인용)" in blob, "숨겼던 값에는 PoC 라벨이 붙는다"
 
 
 def test_compare_panel_shows_both_sides() -> None:

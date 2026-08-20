@@ -118,6 +118,9 @@ VALID_REASON_CODES = frozenset(REASON_TEMPLATES)
 #: 누구나 걸리므로 가장 약하다.
 WEIGHT_TOPIC = 1.0
 WEIGHT_EXPERTISE = 0.6
+#: expertise 토큰이 **하나만** 겹칠 때. 단독으로는 임계값(0.5)을 넘지 못하게
+#: 낮춘다 — 흔한 단어("인증") 하나로 인접 담당자가 끌려 들어오는 것을 막는다.
+WEIGHT_EXPERTISE_SINGLE = 0.3
 WEIGHT_FOCUS = 0.5
 WEIGHT_UNIT = 0.25
 WEIGHT_TITLE = 0.3
@@ -305,7 +308,14 @@ def score_candidate(question: str, cand: Candidate) -> tuple[float, ReasonCode, 
 
     expertise_hits = token_overlap(question, cand.expertise)
     if expertise_hits:
-        score += WEIGHT_EXPERTISE * min(len(expertise_hits), 3)
+        # ⚠️ 단일 토큰 겹침은 약하게 준다. "인증 플랫폼 로드맵" 질문에
+        #    expertise 의 "인증" 하나만 겹쳐도 후보가 되면, 서명 키 회전 담당까지
+        #    끌려 들어온다. 토큰 1개면 임계값(0.5) 미만, 2개 이상이어야 넘는다.
+        n = len(expertise_hits)
+        if n == 1:
+            score += WEIGHT_EXPERTISE_SINGLE  # 0.3 — 단독으로는 임계 미달
+        else:
+            score += WEIGHT_EXPERTISE * min(n, 3)
         matched += list(expertise_hits)
         if code == "no_match":
             code = "expertise_match"
