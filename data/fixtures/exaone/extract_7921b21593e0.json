@@ -1,0 +1,8 @@
+{
+  "auth_mechanism_class": "__unknown__",
+  "session_binding": "none",
+  "credential_reuse_allowed": "__unknown__",
+  "max_session_hours": 24,
+  "credential_lifetime_hours": 24,
+  "renewal_mode": "background_silent"
+}

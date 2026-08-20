@@ -17,7 +17,6 @@ import json
 
 import pytest
 
-from mesh.exceptions import ExaoneUnavailable
 from tests.fakes import agent_reply
 
 # ══════════════════════════════════════════════════════════════════════
@@ -247,7 +246,9 @@ def test_scenario_3_followup_is_blocked_with_a_fallback_and_no_audit(client, wir
     성능 수치 슬롯이 어휘 사전에 없으므로 채울 수 없고, `prepare` 가
     `blocked` + `fallback` 을 함께 반환하므로 `send` 를 부를 필요조차 없다.
     """
-    wiring.fake_exaone.fail["extract"] = ExaoneUnavailable("슬롯을 채울 수 없다")
+    # 대역으로 실패를 강제하지 않는다 — **실제 경로**가 막아야 한다.
+    # 성능 수치를 묻는 질문에 해당하는 task 가 어휘 사전에 없으므로
+    # `choose_schema()` 가 거부하고 구조 페이로드가 만들어지지 않는다.
     prepared = _prepare(client, Q3_FOLLOWUP, ["person:kim"])
     call = prepared["calls"][0]
 
@@ -377,6 +378,7 @@ def test_full_sweep_finds_no_leak(client, wiring):
     ]
     report = wiring.audit.sweep_for_leaks(
         documents,
+        identifiers=[lit for _, lit in wiring.data.pseudonyms.all_literals()],
         banned_literals=wiring.data.banned.literals,
         banned_patterns=wiring.data.banned.patterns,
     )

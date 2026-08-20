@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import pathlib
 import re
 import sqlite3
 import stat
@@ -381,8 +382,72 @@ def test_payload_preview_truncates():
     assert out.endswith("…")
 
 
-def test_payloads_returns_raw_json(store):
+def test_payloads_returns_raw_json_with_representation(store):
+    """`representation` 이 함께 와야 등급별 규칙을 적용할 수 있다 (BR-P-03)."""
     store.record(make_record())
-    rid, blob = store.payloads()[0]
+    rid, blob, rep = store.payloads()[0]
     assert rid == "aud_test0000000000000001"
     assert json.loads(blob)["task"] == "constraint_conflict_check"
+    assert rep is Representation.STRUCTURED
+
+
+def test_sweep_skips_ngram_for_verbatim_payloads(store):
+    """공개 등급은 원문 전송이 정의다 — 5-gram 검사를 적용할 수 없다."""
+    original = "OAuth 2.0 액세스 토큰의 권장 수명은 짧게 유지하는 것이다"
+    store.record(
+        make_record(
+            tier=Tier.OPEN,
+            representation=Representation.VERBATIM,
+            payload={"excerpts": {"COMP_A": original}},
+        )
+    )
+    report = store.sweep_for_leaks([("corpus/public/oauth.md", original)])
+    assert report.clean
+
+
+def test_sweep_checks_identifiers_only_for_pseudonymized(store):
+    """🔴 실측에서 오탐 1076건이 났던 지점.
+
+    가명화 페이로드는 원문 문장을 대부분 유지한다. 평탄한 5-gram 규칙을
+    적용하면 정상 동작이 전부 유출로 잡히고, 목록이 길어지면 아무도 읽지 않는다.
+    """
+    original = "atlas_ml 파이프라인은 RandomOverSampler 로 소수 클래스를 오버샘플링 한다"
+    clean = original.replace("atlas_ml", "<PROJ_1>")
+    store.record(
+        make_record(
+            tier=Tier.INTERNAL,
+            representation=Representation.PSEUDONYMIZED,
+            payload={"excerpts": {"COMP_A": clean}},
+        )
+    )
+    docs = [("corpus/park/x.py", original)]
+    assert store.sweep_for_leaks(docs, identifiers=("atlas_ml",)).clean
+    # 치환하지 않은 페이로드는 잡힌다
+    store.record(
+        make_record(
+            record_id="aud_test0000000000000009",
+            tier=Tier.INTERNAL,
+            representation=Representation.PSEUDONYMIZED,
+            payload={"excerpts": {"COMP_A": original}},
+        )
+    )
+    assert not store.sweep_for_leaks(docs, identifiers=("atlas_ml",)).clean
+
+
+def test_sweep_still_checks_banned_for_every_representation(store):
+    """금칙어는 모든 등급에 동일하게 적용된다 — 사내 등급의 하한선이다."""
+    store.record(
+        make_record(
+            tier=Tier.INTERNAL,
+            representation=Representation.PSEUDONYMIZED,
+            payload={"excerpts": {"COMP_A": "고객사 H 와의 계약 CTR-204817"}},
+        )
+    )
+    from mesh.schemas import BannedTerms
+
+    banned = BannedTerms.load(pathlib.Path("data/banned.json"))
+    report = store.sweep_for_leaks(
+        [], banned_literals=banned.literals, banned_patterns=banned.patterns
+    )
+    assert not report.clean
+    assert report.banned_hits

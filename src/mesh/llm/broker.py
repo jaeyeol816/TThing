@@ -219,16 +219,35 @@ class BrokerClient:
         # 그 사실을 감사 로그의 transport=direct 로 남긴다 (의도된 예외).
         out = out.model_copy(update={"revalidated": True})
 
-        key = fixture_key("agent", env.task_schema_id, json.dumps(env.payload, sort_keys=True))
+        key = self._fixture_key_for(env, model_id)
         self._fixtures.save("agent", env.task_schema_id, key, out.model_dump(mode="json"))
         return out
 
     # ── mock 모드 ────────────────────────────────────────────────────
 
     def _via_fixture(self, env: PayloadEnvelope, model_id: str) -> AgentResponse:
-        key = fixture_key("agent", env.task_schema_id, json.dumps(env.payload, sort_keys=True))
+        key = self._fixture_key_for(env, model_id)
         data = self._fixtures.load("agent", env.task_schema_id, key)
         return self._to_agent_response({**data, "revalidated": True})
+
+    # ── 픽스처 키 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fixture_key_for(env: PayloadEnvelope, model_id: str) -> str:
+        """⚠️ **`model_id` 를 키에 넣는다** (실측 버그, 발견 24).
+
+        에스컬레이션 초안(`ask_draft`)은 **같은 envelope 을 재사용**하고 모델만
+        바꾼다 (BR-AG-04 구현, 발견 17). 키에 모델이 없으면 초안 응답이
+        본 응답의 픽스처를 **덮어쓴다.**
+
+        실측 결과: 목업 모드에서 김책임 Agent 의 답변이 담당자용 인계 메모
+        (`summary`/`draft_answer`)로 바뀌었고, `confidence` 가 없어 0.0 이 되어
+        인용 0개 규칙에 걸려 에스컬레이션됐다. 조용히 **다른 질문에 대한 답**이
+        표시되는 셈이라 오프라인 데모가 무너진다.
+        """
+        return fixture_key(
+            "agent", env.task_schema_id, model_id, json.dumps(env.payload, sort_keys=True)
+        )
 
     # ── 응답 파싱 ────────────────────────────────────────────────────
 

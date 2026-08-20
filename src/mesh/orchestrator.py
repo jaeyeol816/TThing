@@ -53,6 +53,7 @@ from mesh.exceptions import (
     BrokerError,
     ExtractionFailed,
     GatekeeperError,
+    MeshError,
     ScopeViolationError,
     ValidationBlocked,
 )
@@ -230,6 +231,25 @@ def session_facts(session: Session, fresh: Freshness) -> tuple[str, ...]:
 # ══════════════════════════════════════════════════════════════════════
 
 
+class PrepareFailed(MeshError):
+    """`_prepare_one` 실패. **이미 판정된 근거를 함께 들고 온다.**
+
+    왜 예외에 데이터를 붙이는가: 폴백 답변에 표시할 등급(`tier_label`)은
+    동원된 근거의 최고 등급이다. 실패 지점에서 그 정보를 버리면 폴백이
+    `Chunk.tier is None` 만 보게 되고, 기본값 `INTERNAL` 로 떨어져
+    **기밀 근거를 쓴 질의가 `[사내]` 로 표시된다.**
+
+    유출은 아니지만 사용자에게 등급을 낮게 보여주는 것이므로 고친다.
+    다시 판정하는 방법도 있지만 같은 판정을 두 번 하는 것은 낭비이고,
+    두 결과가 갈릴 여지를 만든다.
+    """
+
+    def __init__(self, error: BaseException, chunks: Sequence[Chunk] = ()) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.chunks = list(chunks)
+
+
 @dataclass(slots=True)
 class _CallOutcome:
     """`send` 한 건의 결과. 처분까지 함께 담아 두 번 계산하지 않는다."""
@@ -362,6 +382,20 @@ class Orchestrator:
     async def _prepare_one(
         self, request: AskRequest, target: str, pending: PendingRequest
     ) -> tuple[PreparedCall, tuple[Tier, str] | None]:
+        """실패는 `PrepareFailed` 로 감싼다 — 판정된 근거를 폴백에 넘기기 위해서다."""
+        classified: list[Chunk] = []
+        try:
+            return await self._prepare_inner(request, target, pending, classified)
+        except Exception as e:  # noqa: BLE001 — 폴백에 근거를 넘기고 다시 올린다
+            raise PrepareFailed(e, classified) from e
+
+    async def _prepare_inner(
+        self,
+        request: AskRequest,
+        target: str,
+        pending: PendingRequest,
+        classified: list[Chunk],
+    ) -> tuple[PreparedCall, tuple[Tier, str] | None]:
         agent_cfg = self.data.agent(target)
         persona = agent_cfg.to_persona()
         self.agent.check_daily_limit(persona)
@@ -381,8 +415,8 @@ class Orchestrator:
         if not chunks:
             raise ExtractionFailed(f"{target} 의 세션에서 읽을 근거를 찾지 못했다")
 
-        # ② 지식 등급
-        classified: list[Chunk] = []
+        # ② 지식 등급 — `classified` 는 호출자가 준 리스트를 채운다.
+        #    실패해도 폴백이 등급을 알 수 있어야 한다 (PrepareFailed 참조).
         for chunk in chunks:
             if chunk.tier is not None:
                 classified.append(chunk)  # 승인된 QA — 등급이 이미 있다
@@ -446,15 +480,22 @@ class Orchestrator:
         `PreparedCall` 의 `model_validator` 가 `fallback` 없는 `blocked` 를
         거부하므로 **차단만 하고 답을 안 주는 것이 타입 수준에서 불가능하다.**
         """
-        reason_code, label = _blocked_reason(error)
+        cause = error.error if isinstance(error, PrepareFailed) else error
+        reason_code, label = _blocked_reason(cause)
+
+        # 판정된 근거가 있으면 그것을 쓴다 (등급 표시가 정확해진다).
+        chunks = list(error.chunks) if isinstance(error, PrepareFailed) else []
+        agent_cfg = None
         try:
             agent_cfg = self.data.agent(target)
-            session = self.store.load_session(target)
-            paths = self.store.candidate_paths(session)
-            chunks = self.store.read(list(paths), target)
-        except Exception:  # noqa: BLE001 — 폴백 경로다. 여기서 또 죽으면 안 된다
-            agent_cfg = None
-            chunks = []
+            if not chunks:
+                session = self.store.load_session(target)
+                chunks = self.store.read(list(self.store.candidate_paths(session)), target)
+        except Exception as e:  # noqa: BLE001 — 폴백 경로다. 여기서 또 죽으면 안 된다
+            log.warning(
+                "폴백용 근거를 읽지 못했다 — 근거 없이 답한다",
+                extra=log_extra(target=target, reason=type(e).__name__),
+            )
 
         tier = max([(c.tier or Tier.INTERNAL) for c in chunks], default=Tier.INTERNAL)
         fallback = await self.gatekeeper.answer_in_zone(

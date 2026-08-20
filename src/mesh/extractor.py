@@ -407,7 +407,27 @@ SCHEMA_HINTS: dict[str, tuple[str, ...]] = {
 
 
 def choose_schema(question: str, vocab: Vocabulary) -> TaskSchema:
-    """질문에 맞는 task 스키마. 힌트가 없으면 어휘 사전의 첫 task."""
+    """질문에 맞는 task 스키마.
+
+    ⚠️ **힌트가 하나도 없으면 기본값을 쓰지 않고 실패한다** (실측 버그, 발견 23).
+
+    처음에는 "어휘 사전의 첫 task" 를 기본값으로 썼다. 근거는 "틀려도 슬롯이
+    맞지 않아 `ExtractionFailed` 가 되니 안전하다"였다. **틀렸다.**
+
+    실측: `"그때 p99 지연이 얼마였나요?"` 에 힌트가 없어 기본값
+    `constraint_conflict_check` 가 선택됐고, 그 스키마의 필수 슬롯은 고객사
+    문서에서 **채워졌다.** 결과: Agent 가 p99 를 묻는 질문에 인증 방식 충돌을
+    신뢰도 0.75 로 답했다.
+
+    유출은 아니지만 **묻지 않은 것에 자신 있게 답하는 것**이 더 나쁘다.
+    폴백보다 나쁘다 — 사용자가 그 답을 믿는다.
+
+    그래서 의도를 모르면 보내지 않는다. `ExtractionFailed` → 신뢰 구역 안에서
+    답한다. 시나리오 3 후속 질문이 정확히 이 경로다 (FR-54).
+
+    Raises:
+        ExtractionFailed: 어휘 사전에 이 질문에 해당하는 task 가 없다
+    """
     if not vocab.task_schemas:
         raise ExtractionFailed("어휘 사전에 task_schema 가 없다")
     low = question.lower()
@@ -419,10 +439,13 @@ def choose_schema(question: str, vocab: Vocabulary) -> TaskSchema:
         if score > best_score:
             best_id, best_score = tid, score
     if best_id is None:
-        best_id = next(t for t in vocab.tasks if t in vocab.task_schemas)
         log.info(
-            "질문에서 task 힌트를 찾지 못해 기본 스키마를 쓴다",
-            extra=log_extra(schema_id=best_id),
+            "질문에 해당하는 task 가 어휘 사전에 없다 — 신뢰 구역 안에서 답한다",
+            extra=log_extra(candidates=len(vocab.tasks)),
+        )
+        raise ExtractionFailed(
+            "이 질문에 해당하는 task 가 어휘 사전에 없다. "
+            "구조 페이로드를 만들 수 없으므로 경계를 넘지 않는다"
         )
     return vocab.task_schemas[best_id]
 

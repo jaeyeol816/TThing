@@ -365,9 +365,26 @@ def test_schema_selection_for_the_three_scenarios(vocab, question, expected):
     assert choose_schema(question, vocab).schema_id == expected
 
 
-def test_schema_selection_falls_back_to_first_task(vocab):
-    schema = choose_schema("음", vocab)
-    assert schema.schema_id == vocab.tasks[0]
+def test_unmatched_question_raises_instead_of_defaulting(vocab):
+    """🔴 실측 버그 (발견 23).
+
+    처음에는 "어휘 사전의 첫 task" 를 기본값으로 썼다. 근거는 "틀려도 슬롯이
+    맞지 않아 `ExtractionFailed` 가 되니 안전하다"였는데 **틀렸다.**
+
+    실측: `"그때 p99 지연이 얼마였나요?"` 에 힌트가 없어 기본값
+    `constraint_conflict_check` 가 선택됐고, 그 스키마의 필수 슬롯은 고객사
+    문서에서 **채워졌다.** Agent 가 p99 를 묻는 질문에 인증 충돌을 신뢰도
+    0.75 로 답했다. 유출은 아니지만 **묻지 않은 것에 자신 있게 답하는 것**이
+    폴백보다 나쁘다 — 사용자가 그 답을 믿는다.
+    """
+    with pytest.raises(ExtractionFailed, match="어휘 사전에 없다"):
+        choose_schema("음", vocab)
+
+
+def test_performance_question_finds_no_task(vocab):
+    """시나리오 3 후속 질문이 이 경로다 (FR-54)."""
+    with pytest.raises(ExtractionFailed):
+        choose_schema("그때 p99 지연이 얼마였나요?", vocab)
 
 
 # ══════════════════════════════════════════════════════════════════════

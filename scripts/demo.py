@@ -237,6 +237,8 @@ async def leak_sweep(svc: Services) -> None:
     ]
     report = svc.audit.sweep_for_leaks(
         documents,
+        # 가명화 등급은 식별자 포함 n-gram 만 검사한다 (BR-P-03)
+        identifiers=[lit for _, lit in svc.data.pseudonyms.all_literals()],
         banned_literals=svc.data.banned.literals,
         banned_patterns=svc.data.banned.patterns,
     )

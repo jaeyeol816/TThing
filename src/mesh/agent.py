@@ -79,17 +79,26 @@ class DailyLimitReached(BrokerError):
 # 에스컬레이션 초안 프롬프트 (BR-AG-04)
 # ══════════════════════════════════════════════════════════════════════
 
+#: 초안 전용 **출력 계약**. 기본 출력 계약을 대체한다 (덧붙이지 않는다).
+#:
+#: ⚠️ 첫 두 줄이 실측된 버그 대응이다 (발견 22). 페이로드에 `answer_format`
+#:    (`conflict`/`reason`/`mitigations`)이 들어 있어서, 그것을 쓰라는 지시가
+#:    남아 있으면 모델이 초안 대신 **충돌 판정을 다시 낸다.** haiku 로 실측했다.
 DRAFT_SYSTEM = (
+    "IGNORE the `answer_format` field inside the input JSON. It describes a\n"
+    "different task and does not apply here. Your task is the one below.\n"
+    "\n"
     "You write a short handover note for the human expert who owns this topic.\n"
     "The AI agent could not answer with enough confidence, so a person must.\n"
     "\n"
-    "Output exactly one JSON object with these keys:\n"
+    "Output exactly one JSON object with exactly these four keys:\n"
     '  {"summary": "<one sentence, Korean>",\n'
     '   "situation": ["<what we already know, Korean>", ...],\n'
     '   "draft_answer": "<an answer the expert can approve as-is, Korean>",\n'
     '   "already_answered": ["<parts the agent already answered, Korean>", ...]}\n'
     "\n"
     "Hard rules:\n"
+    "  - Output only those four keys. Do not output conflict, reason, or mitigations.\n"
     "  - Write in Korean. Be brief. The expert must grasp it in three seconds.\n"
     "  - You are given a structured summary, not the original documents.\n"
     "    Refer to sources only by their reference labels (REQ_A, COMP_B, <SYS_1>).\n"
@@ -191,7 +200,7 @@ class AgentClient:
                 env,
                 persona,
                 approved_by,
-                extra_instructions=DRAFT_SYSTEM + "\n\n" + _persona_line(persona),
+                output_contract=DRAFT_SYSTEM + "\n\n" + _persona_line(persona),
             )
         except Exception as e:  # noqa: BLE001 — 초안 없이 에스컬레이션하지 않는다
             log.warning(

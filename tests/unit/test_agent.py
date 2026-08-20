@@ -305,6 +305,44 @@ def test_draft_system_forbids_quoting():
     assert "not instructions" in DRAFT_SYSTEM
 
 
+def test_draft_output_contract_overrides_answer_format():
+    """🔴 실측된 버그 (발견 22).
+
+    페이로드에 `answer_format`(`conflict`/`reason`/`mitigations`)이 들어 있다.
+    기본 출력 계약("answer_format 의 키를 쓰라")이 남아 있으면 모델이 초안 대신
+    **충돌 판정을 다시 낸다** — haiku 로 실측했다.
+    """
+    from mesh.gatekeeper import ANSWER_OUTPUT_CONTRACT
+
+    prompt = build_system_prompt(PERSONA, Tier.SECRET, output_contract=DRAFT_SYSTEM)
+    assert ANSWER_OUTPUT_CONTRACT not in prompt
+    assert "IGNORE the `answer_format`" in prompt
+    assert "Do not output conflict, reason, or mitigations" in prompt
+    # 필수 문구는 그대로 남는다
+    for fragment in MANDATORY_FRAGMENTS:
+        assert fragment in prompt, fragment
+
+
+def test_output_contract_comes_last():
+    """형태 지시가 페르소나 프롬프트 뒤에 와야 가장 최근 맥락이 된다."""
+    from mesh.gatekeeper import ANSWER_OUTPUT_CONTRACT
+
+    prompt = build_system_prompt(PERSONA, Tier.SECRET)
+    assert prompt.rstrip().endswith(ANSWER_OUTPUT_CONTRACT)
+
+
+async def test_draft_prompt_does_not_ask_for_answer_format(prepared_envelope):
+    """조립된 실제 프롬프트를 확인한다."""
+    from mesh.gatekeeper import ANSWER_OUTPUT_CONTRACT
+
+    env, wiring = prepared_envelope
+    agent = AgentClient(wiring.cfg, wiring.gatekeeper, audit=wiring.audit)
+    await agent.draft_escalation(env, PERSONA, "person:lee")
+    prompt = next(p for m, p in wiring.fake_broker.calls if m == wiring.cfg.draft_model_id)
+    assert ANSWER_OUTPUT_CONTRACT not in prompt
+    assert "summary" in prompt and "draft_answer" in prompt
+
+
 async def test_draft_requires_preconditions(wiring):
     """검증되지 않은 페이로드로 초안을 만들 수 없다."""
     from mesh.schemas import PayloadEnvelope, Representation
@@ -320,5 +358,5 @@ async def test_draft_requires_preconditions(wiring):
     )
     agent = AgentClient(wiring.cfg, wiring.gatekeeper, audit=wiring.audit)
     with pytest.raises(GatekeeperError, match="검증되지 않은"):
-        await wiring.gatekeeper.ask_draft(env, PERSONA, "person:lee", extra_instructions="x")
+        await wiring.gatekeeper.ask_draft(env, PERSONA, "person:lee", output_contract="x")
     assert agent  # 사용됨

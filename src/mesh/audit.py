@@ -410,10 +410,19 @@ class AuditLog:
         )
         self._conn.commit()
 
-    def payloads(self) -> tuple[tuple[str, str], ...]:
-        """`(record_id, payload_json)`. 전수 유출 검사용."""
-        rows = self._conn.execute("SELECT record_id, payload_json FROM audit").fetchall()
-        return tuple((r["record_id"], r["payload_json"]) for r in rows)
+    def payloads(self) -> tuple[tuple[str, str, Representation], ...]:
+        """`(record_id, payload_json, representation)`. 전수 유출 검사용.
+
+        `representation` 이 필요한 이유: 등급마다 "유출"의 정의가 다르다
+        (BR-P-03). 가명화 페이로드는 원문 문장을 대부분 유지하므로 평탄한
+        5-gram 규칙을 적용하면 정상 동작이 전부 유출로 잡힌다.
+        """
+        rows = self._conn.execute(
+            "SELECT record_id, payload_json, representation FROM audit"
+        ).fetchall()
+        return tuple(
+            (r["record_id"], r["payload_json"], Representation(r["representation"])) for r in rows
+        )
 
     # ── 인박스 접근 (조작은 inbox.py 가 한다) ────────────────────────
 
@@ -433,6 +442,8 @@ class AuditLog:
         documents: Sequence[tuple[str, str]],
         *,
         n: int = 5,
+        n_internal: int = 3,
+        identifiers: Sequence[str] = (),
         banned_literals: Sequence[str] = (),
         banned_patterns: Sequence[str] = (),
     ) -> LeakReport:
@@ -440,6 +451,22 @@ class AuditLog:
 
         샘플 데이터라서 가능한 검증이다 — 문서를 우리가 만들었으니 전수 검사가
         현실적이다 (설계 §2.1). 실서비스라면 표본 검사가 된다.
+
+        ⚠️ **등급마다 "유출"의 정의가 다르다** (BR-P-03). 검증 5단계와 같은
+           규칙을 써야 한다 — 실측에서 이걸 빠뜨려 **오탐 1076건**이 났고,
+           목록이 그만큼 길면 아무도 읽지 않는다. 즉 가장 강력한 주장이
+           **실제 유출을 가리는 도구**가 되어 있었다.
+
+           | 표현 | 검사 대상 |
+           |---|---|
+           | `STRUCTURED` (기밀) | 원문 5-gram 전체 |
+           | `PSEUDONYMIZED` (사내) | **식별자를 포함한** n-gram 만 |
+           | `VERBATIM` (공개) | 없음 — 원문 전송이 등급의 정의다 |
+
+        `identifiers` 는 가명화 대상 전체다 (`pseudonyms.all_literals()`).
+        치환된 것만 넘기면 놓친 표기 변형을 검사할 방법이 사라진다.
+
+        금칙어 검사는 **모든 등급에 동일하게** 적용된다 — 사내 등급의 하한선이다.
 
         `documents` 는 `(경로, 원문)` 쌍이다. `Chunk` 를 받지 않는 이유:
         U6 의 평가 스크립트가 파일을 직접 읽으므로 `Chunk` 조립이 불필요하고,
@@ -449,12 +476,23 @@ class AuditLog:
         stored = self.payloads()
         # 저장된 JSON 문자열을 그대로 정규화하면 안 된다 — `\n` 이스케이프가
         # 공백 정규화를 빠져나가 대조가 헐거워진다 (validator.payload_text 참조).
-        blobs = [(rid, normalize_text(payload_text(json.loads(pj)))) for rid, pj in stored]
+        blobs = [
+            (rid, normalize_text(payload_text(json.loads(pj))), rep) for rid, pj, rep in stored
+        ]
+        low_identifiers = [i.lower() for i in identifiers if i.strip()]
 
         hits: list[LeakHit] = []
         for path, text in documents:
-            grams = ngram_set(text, n)
-            for record_id, blob in blobs:
+            full = ngram_set(text, n)
+            identifier_only = frozenset(
+                g
+                for g in (full | ngram_set(text, n_internal))
+                if any(tok in g for tok in low_identifiers)
+            )
+            for record_id, blob, representation in blobs:
+                if representation is Representation.VERBATIM:
+                    continue  # 원문 전송이 등급의 정의다
+                grams = identifier_only if representation is Representation.PSEUDONYMIZED else full
                 for gram in grams:
                     if gram in blob:
                         hits.append(
@@ -468,7 +506,7 @@ class AuditLog:
 
         banned_hits: list[LeakHit] = []
         compiled = [(p, re.compile(p, re.IGNORECASE)) for p in banned_patterns]
-        for record_id, payload_json in stored:
+        for record_id, payload_json, _ in stored:
             low = payload_json.lower()
             for lit in banned_literals:
                 if lit.lower() in low:

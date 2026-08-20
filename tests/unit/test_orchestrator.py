@@ -550,3 +550,55 @@ async def test_internal_tier_question_is_pseudonymized(wiring):
     assert "RandomOverSampler" in pretty  # 기술 용어는 보존
     assert call.preview.validation_summary == "6/6"
     assert call.preview.verbatim_sentence_count == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 차단된 호출의 등급 표시 (실측 버그, 발견 25)
+# ══════════════════════════════════════════════════════════════════════
+
+
+async def test_blocked_fallback_reports_the_escalated_tier(wiring):
+    """🔴 폴백 배지가 근거의 최고 등급을 보여야 한다.
+
+    실측: `[기밀 · 사내망 밖으로 나간 것 없음]` 이어야 할 자리에 `[사내]` 가
+    나왔다. 실패 지점에서 판정 결과를 버리고 `_blocked_call` 이 파일을 다시
+    읽었는데, `read()` 는 `Chunk.tier` 를 채우지 않으므로 전부 기본값
+    `INTERNAL` 이 됐다.
+
+    유출은 아니지만 **사용자에게 등급을 낮게 보여주는 것**이므로 고친다.
+    """
+    result = await wiring.orchestrator.prepare(ask(question="그때 p99 지연이 얼마였나요?"))
+    call = result.calls[0]
+    assert call.disposition == "blocked"
+    assert call.tier is Tier.SECRET
+    assert call.fallback.tier is Tier.SECRET
+    assert "기밀" in call.fallback.text
+
+
+async def test_prepare_failure_carries_classified_chunks(wiring):
+    """같은 판정을 두 번 하지 않는다 — 두 결과가 갈릴 여지를 만들지 않는다."""
+    from mesh.orchestrator import PrepareFailed
+
+    pending = wiring.orchestrator._pending  # noqa: SLF001 — 내부 상태 확인
+    assert pending is not None
+
+    with pytest.raises(PrepareFailed) as caught:
+        await wiring.orchestrator._prepare_one(  # noqa: SLF001
+            ask(question="그때 p99 지연이 얼마였나요?"),
+            "person:kim",
+            __import__("mesh.orchestrator", fromlist=["PendingRequest"]).PendingRequest(
+                request_id="req_x", asker="person:lee", question="q", order=("person:kim",)
+            ),
+        )
+    failure = caught.value
+    assert failure.chunks, "판정된 근거가 예외에 실려 와야 한다"
+    assert any(c.tier is Tier.SECRET for c in failure.chunks)
+
+
+async def test_unmatched_question_blocks_without_calling_the_agent(wiring):
+    """어휘 사전에 task 가 없으면 **대역을 실패시키지 않아도** 막힌다."""
+    result = await wiring.orchestrator.prepare(ask(question="그때 p99 지연이 얼마였나요?"))
+    assert result.calls[0].disposition == "blocked"
+    assert wiring.fake_broker.calls == []
+    assert wiring.audit.count() == 0
+    assert wiring.audit.local_count() == 1

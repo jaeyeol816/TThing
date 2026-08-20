@@ -43,10 +43,7 @@ def test_four_acts_are_defined(demo):
 async def test_each_act_runs(demo, wiring, capsys, index):
     spec = demo.SCENARIOS[index]
     if "p99" in spec["question"]:
-        # 후속 질문은 구조 추출 실패 경로다
-        from mesh.exceptions import ExaoneUnavailable
-
-        wiring.fake_exaone.fail["extract"] = ExaoneUnavailable("슬롯을 채울 수 없다")
+        pass  # 후속 질문은 어휘 사전에 task 가 없어 실제 경로가 막는다
     elif index == 1:
         wiring.fake_exaone.slots = [{"sampling_strategy_class": "hybrid"}]
     elif index == 2:

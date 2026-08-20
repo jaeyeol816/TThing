@@ -1,0 +1,8 @@
+{
+  "auth_mechanism_class": "challenge_response",
+  "session_binding": "required",
+  "credential_reuse_allowed": "false",
+  "max_session_hours": 8,
+  "credential_lifetime_hours": "__unknown__",
+  "renewal_mode": "explicit"
+}

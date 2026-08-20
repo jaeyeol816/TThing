@@ -418,3 +418,47 @@ Schema refinement: the role field was moved out of vocab.json slots and into a t
 **Context**: todo #11 완료
 
 ---
+## 첫 완전 live 실행 검증 요청
+**Timestamp**: 2026-08-20T11:20:00Z
+**User Input**: ".env 의 AWS Access 부분에 추가했는데, 한번 잘 되는지 파악 부탁드려요"
+**AI Response**: 자격증명 유효성 확인 → preflight 27건 통과 → EXAONE+Bedrock 완전 live 종단 실행 → 결함 5건 발견·수정 → 목업 픽스처 녹화 → 오프라인 4막 통과.
+**Context**: 검증 / Day 3 이후
+
+---
+
+## 자격증명 확인
+**Timestamp**: 2026-08-20T11:24:00Z
+**AI Response**: `.env` 의 STS 임시 자격증명(ASIA…) 유효 — 계정 891401657794, `assumed-role/WSParticipantRole/Participant`. `make preflight` 검사 27건 실패 0 경고 2(경계 시뮬레이션, CDK 미부트스트랩). Bedrock 왕복 2.41s.
+⚠️ **발견 (§14)**: `.kiro/.env` 에도 `AWS_*` 4개가 있고 **만료된 값**이다(해시 비교로 다름 확인). `. ./.env; . ./.kiro/.env` 순서로 로드하면 만료된 것이 이긴다 — Day 2·3 의 preflight 실패가 이것이었다. 자격증명 출처를 하나로 통일할 것을 권고.
+**Context**: 값은 출력하지 않고 접두사·길이·해시만 사용
+
+---
+
+## MESH_DEMO_NOW 설정
+**Timestamp**: 2026-08-20T11:31:00Z
+**AI Response**: `.env` 의 `MESH_DEMO_NOW` 가 비어 있어 실시간 기준(2026-08-20)으로 판정되고 세션 3개가 전부 STALE(x0.8)이 됐다. 시나리오 1 이 0.92×0.8=0.736 < 0.75 로 `unverified` 가 됐다 — 동작은 올바르지만 데모 서술이 깨진다. 이 변수가 존재하는 이유가 정확히 이 문제(BR-S-04 데모 재현성)이므로 `2026-08-19T14:35:00+09:00` 으로 설정했다.
+**Context**: `.env` 는 gitignore 대상이고 되돌리기 쉬운 변경
+
+---
+
+## 완전 live 실행 · 결함 5건
+**Timestamp**: 2026-08-20T11:52:00Z
+**AI Response**: 대역 테스트 976개가 전부 통과한 상태에서 실제 모델로 돌렸더니 결함 5건이 나왔다. 상세는 `preflight-findings.md` §13.
+
+🔴 **발견 22**: `ask_draft` 가 `build_system_prompt` 의 기본 출력 계약("answer_format 의 키를 쓰라")과 `DRAFT_SYSTEM` 을 **덧붙여** 조립했다. 페이로드에 `answer_format` 이 실제로 있어서 두 지시가 충돌하고 haiku 가 초안 대신 충돌 판정을 다시 냈다 → 폴백 초안(내용 없음). 조치: 출력 계약을 인자로 받아 **대체**하고, 마지막에 배치하고, `DRAFT_SYSTEM` 첫 줄에 `IGNORE the answer_format` 명시. 재실측에서 네 키 정확.
+
+🔴 **발견 23**: `choose_schema` 의 기본값(첫 task)이 "묻지 않은 것에 자신 있게 답"하게 했다. `"그때 p99 지연이 얼마였나요?"` → `constraint_conflict_check` → 필수 슬롯이 고객사 문서에서 **채워짐** → 검증 6/6 → 전송 → 인증 충돌 답변(신뢰도 0.75, auto). Day 2 보고서의 "틀려도 유출이 아니라 품질 저하"라는 판단이 틀렸다 — 폴백보다 나쁘다. 조치: 힌트 없으면 `ExtractionFailed`.
+
+🔴 **발견 24**: 픽스처 키가 `(agent, schema_id, payload)` 인데 `ask_draft` 가 같은 envelope 을 재사용하므로 초안 응답이 본 응답 픽스처를 덮어썼다. 오프라인에서 김책임 Agent 답변이 인계 메모로 바뀌고 `confidence` 부재 → 0.0 → 인용 0개 규칙에 걸려 escalate. 조치: 키에 `model_id` 추가.
+
+**발견 25**: `_blocked_call` 이 실패 지점의 판정 결과를 버리고 파일을 다시 읽어 `[기밀]` 자리에 `[사내]` 가 표시됐다. 조치: `PrepareFailed` 예외가 판정된 근거를 함께 들고 온다.
+
+🔴 **발견 26**: `sweep_for_leaks` 가 등급별 규칙(BR-P-03)을 적용하지 않아 **오탐 1076건**. 가장 강한 주장이 진짜 유출을 가리는 도구가 되어 있었다. 조치: 검증 5단계와 같은 규칙(STRUCTURED 전체 / PSEUDONYMIZED 식별자 포함만 / VERBATIM 미적용). `AuditRecord.representation` 이 이미 저장돼 있었는데 쓰지 않고 있었다.
+
+**수정 후 실측**: 시나리오 1 처분 `auto` · 신뢰도 0.85 · 6/6 · 727 bytes · 원문 문장 수 0. 실제 Claude 가 원문 없이 세 문서를 대조해 세 가지 충돌 + 대응 방안 5개. 전수 유출 0건. 지연 prepare 3~4s / send 10~14s / 2명 병렬 16s.
+
+**목업 픽스처 24개 녹화** (exaone 24 + agent 5) → 네트워크 0회로 4막 + 유출 검사 exit=0 → **게이트 G5 통과**.
+테스트 983개 통과 · lint 통과.
+**Context**: LLM 호출 — EXAONE 약 30회 · Bedrock 약 12회 (첫 live 종단 + 결함 4건 재검증 + 픽스처 녹화). 픽스처가 남았으므로 이후 오프라인으로 반복 가능
+
+---

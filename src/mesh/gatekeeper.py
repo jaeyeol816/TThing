@@ -151,17 +151,32 @@ TIER_CLAUSES: dict[Tier, str] = {
     Tier.OPEN: "",
 }
 
-_OUTPUT_CONTRACT = (
-    "출력은 JSON 객체 하나입니다. answer_format 의 키 + confidence(0..1) + "
+ANSWER_OUTPUT_CONTRACT = (
+    "출력은 JSON 객체 하나입니다. 입력의 answer_format 에 있는 키 + confidence(0..1) + "
     "citations(문자열 배열)을 담습니다. 그 밖의 키를 만들지 마십시오."
 )
 
 
-def build_system_prompt(persona: Persona, tier: Tier) -> str:
+def build_system_prompt(
+    persona: Persona, tier: Tier, *, output_contract: str = ANSWER_OUTPUT_CONTRACT
+) -> str:
     """페르소나 프롬프트에 필수 문구를 **강제 삽입**한다.
 
     누군가 `agents.yaml` 을 편집하다 페르소나 프롬프트로 덮어써도 필수 문구는 남는다.
     그래서 `agents.yaml` 에는 사람 고유의 맥락만 쓴다.
+
+    ⚠️ `output_contract` 를 인자로 받는 이유 (실측된 버그, 발견 22):
+
+       초안 생성(`ask_draft`)은 같은 페이로드에 **다른 출력 형태**를 요구한다.
+       그런데 기본 출력 계약은 "입력의 `answer_format` 키를 쓰고 그 밖의 키를
+       만들지 말라"이고, 페이로드에는 `answer_format` 이 실제로 들어 있다.
+       두 지시가 충돌하면 모델은 **먼저 본 것**을 따른다 — 실측에서 haiku 가
+       초안 대신 충돌 판정을 다시 냈다.
+
+       그래서 출력 계약을 고정하지 않고 호출자가 지정하게 한다.
+
+    ⚠️ 출력 계약을 **마지막에** 둔다. 페르소나 프롬프트 뒤에 와야 모델이
+       형태 지시를 가장 최근 맥락으로 본다.
     """
     parts = [
         MANDATORY_NO_FIRST_PERSON.format(display_name=persona.display_name),
@@ -173,9 +188,9 @@ def build_system_prompt(persona: Persona, tier: Tier) -> str:
     clause = TIER_CLAUSES.get(tier, "")
     if clause:
         parts.append(clause)
-    parts.append(_OUTPUT_CONTRACT)
     parts.append(f"담당 영역: {persona.expertise}")
     parts.append(persona.persona_prompt.strip())
+    parts.append(output_contract)
 
     prompt = "\n\n".join(p for p in parts if p.strip())
     assert_all_mandatory_present(prompt)
@@ -691,7 +706,7 @@ class Gatekeeper:
         persona: Persona,
         approved_by: str,
         *,
-        extra_instructions: str,
+        output_contract: str,
     ) -> AgentResponse:
         """에스컬레이션 초안 전용 호출 (BR-AG-04).
 
@@ -713,11 +728,15 @@ class Gatekeeper:
         초안의 품질은 유지되고 경계는 그대로다.
 
         이 호출도 경계를 넘으므로 감사 로그에 남는다 (`model_id` 가 draft 모델).
+
+        Args:
+            output_contract: 초안의 출력 형태. **기본 출력 계약을 대체한다** —
+                덧붙이면 페이로드의 `answer_format` 지시와 충돌해 모델이
+                초안 대신 원래 답을 다시 낸다 (실측, 발견 22).
         """
         self.check_preconditions(env, approved_by)
 
-        prompt = build_system_prompt(persona, env.tier) + "\n\n" + extra_instructions
-        assert_all_mandatory_present(prompt)
+        prompt = build_system_prompt(persona, env.tier, output_contract=output_contract)
         model_id = self.cfg.draft_model_id
 
         self.audit.record(self._request_record(env, persona, approved_by, model_id=model_id))

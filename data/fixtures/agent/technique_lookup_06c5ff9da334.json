@@ -1,0 +1,20 @@
+{
+  "answer": {
+    "technique": "COMP_A는 라벨 불균형을 2단계 하이브리드 방식으로 처리합니다. 1단계에서 RandomOverSampler를 sampling_strategy=0.5로 설정하여 소수 클래스를 다수 클래스의 50%까지만 오버샘플링하고, 2단계에서 학습 시 class_weight='balanced_subsample'을 적용하여 나머지 불균형을 가중치로 보정합니다.",
+    "rationale": "COMP_A의 build_sampler 함수 docstring에 명시된 바와 같이, 1:1 완전 균형까지 오버샘플링하면 소수 클래스가 과도하게 복제되어 과적합이 심해집니다. 0.5에서 멈추고 가중치로 마무리하는 방식이 검증 재현율에서 더 좋은 성능을 보였다고 기록되어 있습니다. COMP_B 설정 파일에서 sampling_strategy: 0.5, random_state: 42, class_weight: balanced_subsample 파라미터가 이를 구체적으로 구현합니다."
+  },
+  "confidence": 0.95,
+  "citations": [
+    "COMP_A",
+    "COMP_B"
+  ],
+  "usage": {
+    "inputTokens": 2227,
+    "outputTokens": 401,
+    "totalTokens": 2628,
+    "cacheReadInputTokens": 0,
+    "cacheWriteInputTokens": 0
+  },
+  "revalidated": true,
+  "vocab_sha256": null
+}
