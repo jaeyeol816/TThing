@@ -673,6 +673,9 @@ class DataBundle:
         self.agents: dict[str, AgentConfig] = (
             load_agents(cfg.agents_path) if load_agent_configs else {}
         )
+        # agents/ 폴더 스캔으로 yaml에 없는 agent 자동 보완
+        if load_agent_configs:
+            self._scan_agents_folder(cfg)
         self._add_entity_ids_to_pseudonyms()
         self._check_lists_are_disjoint()
 
@@ -769,6 +772,67 @@ class DataBundle:
             return self.agents[entity_id]
         except KeyError as e:
             raise ConfigError(f"미등록 에이전트: {entity_id!r}") from e
+
+    def _scan_agents_folder(self, cfg: "Config") -> None:
+        """agents/ 폴더를 스캔해 yaml에 없는 agent를 자동 등록한다.
+
+        조건: agents/{name}/gatekeeper/session.json 이 존재하면 agent로 인식.
+        entity_id = person:{name} 형식으로 생성.
+        이미 yaml에 있는 entity_id는 건드리지 않는다.
+        """
+        agents_root = cfg.data_root
+        if not agents_root.exists():
+            return
+
+        for folder in sorted(agents_root.iterdir()):
+            if not folder.is_dir() or folder.name == "shared":
+                continue
+
+            session_path = folder / "gatekeeper" / "session.json"
+            if not session_path.exists():
+                continue
+
+            # entity_id 추론: person_kim → person:kim
+            name = folder.name
+            if name.startswith("person_"):
+                entity_id = "person:" + name[len("person_"):]
+            else:
+                entity_id = "person:" + name
+
+            if entity_id in self.agents:
+                continue  # yaml에 이미 있으면 skip
+
+            # session.json에서 display_name 추론 시도
+            display_name = name.replace("person_", "").replace("_", " ").title()
+            expertise = "일반"
+            try:
+                import json as _json
+                raw = _json.loads(session_path.read_text(encoding="utf-8"))
+                if raw.get("entity_id"):
+                    pass  # entity_id 일치 확인 가능
+                if raw.get("focus"):
+                    expertise = raw["focus"][:40]
+            except Exception:  # noqa: BLE001
+                pass
+
+            from mesh.schemas import AgentConfig, Disclose
+            synthetic = AgentConfig(
+                entity_id=entity_id,
+                display_name=display_name,
+                expertise=expertise,
+                persona_prompt=f"{display_name}의 Agent입니다.",
+                knowledge_scope=(f"{name}/data/**",),
+                escalation_inbox=entity_id,
+                daily_limit=50,
+                disclose=Disclose(activity_status=True, question_count_today=True, current_focus=True),
+                org=None,
+                topics=(),
+            )
+            self.agents[entity_id] = synthetic
+            get_logger("config").info(
+                "agents/ 폴더 스캔 — agent 자동 등록",
+                extra={"entity_id": entity_id, "folder": name},
+            )
 
 
 def sha256_file(path: Path) -> str:

@@ -604,6 +604,29 @@ def _install_routes(app: FastAPI) -> None:
         cards = await _services(request).orchestrator.agent_cards()
         return [AgentCardView.model_validate(c.model_dump()) for c in cards]
 
+    @app.post("/api/agents/refresh", response_model=list[AgentCardView])
+    async def refresh_agents(request: Request) -> list[AgentCardView]:
+        """`agents/` 폴더와 `config/agents.yaml` 을 다시 읽어 목록을 갱신한다.
+
+        폴더를 새로 만들고 이 버튼을 누르면 서버 재시작 없이 조직도에 나타난다.
+        """
+        svc = _services(request)
+        from mesh.config import load_agents
+
+        # yaml 재로드 (파일을 고쳤을 수 있다)
+        try:
+            svc.data.agents = load_agents(svc.cfg.agents_path)
+        except Exception as e:  # noqa: BLE001 — yaml 이 깨져도 폴더 스캔은 한다
+            log.warning("agents.yaml 재로드 실패", extra=log_extra(reason=str(e)))
+
+        # 폴더 스캔으로 yaml 에 없는 사람 보완
+        svc.data._scan_agents_folder(svc.cfg)
+        svc.data._add_entity_ids_to_pseudonyms()
+
+        cards = await svc.orchestrator.agent_cards()
+        log.info("에이전트 목록 갱신", extra=log_extra(count=len(cards)))
+        return [AgentCardView.model_validate(c.model_dump()) for c in cards]
+
     # ── 조직도 ───────────────────────────────────────────────────────
 
     @app.get("/api/org", response_model=OrgChartResponse)
@@ -620,6 +643,17 @@ def _install_routes(app: FastAPI) -> None:
         """
         svc = _services(request)
         view = svc.data.org.to_view(svc.data.placements)
+        # org.yaml 에 자리가 없는 agent 도 조직도에 "미배치" 로 보이게 한다.
+        placed = set(svc.data.placements)
+        strays = tuple(sorted(eid for eid in svc.data.agents if eid not in placed))
+        if strays:
+            merged = {
+                **view.model_dump(),
+                "unplaced_member_ids": tuple(
+                    sorted({*view.unplaced_member_ids, *strays})
+                ),
+            }
+            return OrgChartResponse.model_validate(merged)
         return OrgChartResponse.model_validate(view.model_dump())
 
     # ── 브로드캐스트: 지목보다 먼저 오는 단계 ────────────────────────

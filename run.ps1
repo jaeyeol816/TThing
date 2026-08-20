@@ -9,6 +9,15 @@ if (Test-Path .env) {
     }
 }
 
+Write-Host "[0/3] Killing process on port 8080..."
+$pid8080 = (Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue).OwningProcess
+if ($pid8080) {
+    Stop-Process -Id $pid8080 -Force -ErrorAction SilentlyContinue
+    Write-Host "Killed PID $pid8080"
+} else {
+    Write-Host "Port 8080 is free"
+}
+
 Write-Host "[1/3] Installing dependencies..."
 uv sync
 if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: uv sync"; pause; exit 1 }

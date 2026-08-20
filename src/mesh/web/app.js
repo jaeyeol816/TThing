@@ -1245,14 +1245,20 @@ async function showMergedPreview() {
 }
 
 function wireProtocol() {
-  $("protocol-btn").addEventListener("click", openProtocolModal);
-  $("protocol-modal-close").addEventListener("click", closeProtocolModal);
-  $("protocol-modal").addEventListener("cancel", closeProtocolModal);
-  $("protocol-form").addEventListener("submit", saveProto);
-  $("proto-delete-btn").addEventListener("click", deleteProto);
-  $("show-merged-btn").addEventListener("click", showMergedPreview);
+  // 요소가 없을 수 있다 (UI 개편으로 버튼이 빠질 수 있음).
+  // 하나가 없어서 wire() 전체가 죽으면 조직도까지 안 뜬다.
+  const on = (id, evt, fn) => {
+    const node = $(id);
+    if (node) node.addEventListener(evt, fn);
+  };
 
-  // "추가" 버튼들
+  on("protocol-btn", "click", openProtocolModal);
+  on("protocol-modal-close", "click", closeProtocolModal);
+  on("protocol-modal", "cancel", closeProtocolModal);
+  on("protocol-form", "submit", saveProto);
+  on("proto-delete-btn", "click", deleteProto);
+  on("show-merged-btn", "click", showMergedPreview);
+
   document.querySelectorAll(".proto-add-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       newProtoEditor(btn.dataset.level, btn.dataset.owner);
@@ -1268,27 +1274,55 @@ function wireProtocol() {
 function wire() {
   wireProtocol();
 
+  // 요소가 없어도 나머지 배선이 계속되게 한다.
+  const on = (id, evt, fn) => {
+    const node = $(id);
+    if (node) node.addEventListener(evt, fn);
+  };
+
   const input = $("message-input");
   const sendBtn = $("send-btn");
 
-  input.addEventListener("input", () => {
-    autoResize(input);
-    refreshSendButton();
-  });
+  if (input) {
+    input.addEventListener("input", () => {
+      autoResize(input);
+      refreshSendButton();
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (sendBtn && !sendBtn.disabled) onSubmit();
+      }
+    });
+  }
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!sendBtn.disabled) onSubmit();
+  on("send-btn", "click", onSubmit);
+  on("trace-modal-close", "click", () => {
+    const m = $("trace-modal");
+    if (m) m.close();
+  });
+  on("thread-back", "click", () => openThread(BROADCAST_VIEW));
+  on("org-reset", "click", resetBroadcast);
+
+  on("org-refresh-btn", "click", async () => {
+    const btn = $("org-refresh-btn");
+    btn.disabled = true;
+    btn.style.opacity = "0.5";
+    try {
+      state.agents = await api("/api/agents/refresh", { method: "POST" });
+      state.agentsById = Object.fromEntries(state.agents.map((a) => [a.entity_id, a]));
+      // 조직도 트리도 다시 읽는다 — 새 사람이 미배치로 들어올 수 있다
+      try {
+        state.org = await api("/api/org");
+      } catch { state.org = null; }
+      renderOrgTree();
+    } catch (err) {
+      console.error("조직도 새로고침 실패:", err);
+    } finally {
+      btn.disabled = false;
+      btn.style.opacity = "";
     }
   });
-
-  sendBtn.addEventListener("click", onSubmit);
-
-  $("trace-modal-close").addEventListener("click", () => $("trace-modal").close());
-
-  $("thread-back").addEventListener("click", () => openThread(BROADCAST_VIEW));
-  $("org-reset").addEventListener("click", resetBroadcast);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1314,6 +1348,7 @@ async function boot() {
   } catch { state.org = null; }
 
   openThread(BROADCAST_VIEW);
+  renderOrgTree();
   refreshSendButton();
 }
 
