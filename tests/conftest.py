@@ -61,10 +61,17 @@ def mock_env(monkeypatch, data_root: Path) -> Path:
         "BROKER_API_KEY",
         "MESH_DEMO_NOW",
         "MESH_RECORD_FIXTURES",
+        "MESH_FIXTURE_OVERWRITE",
         "TRUSTED_ZONE_LLM_BASE_URL",
         "CONFIDENCE_AUTO",
         "CONFIDENCE_ESCALATE",
         "NGRAM_SIZE",
+        # 피어 메시 — 테스트는 기본적으로 단독 노드다. 개발자 셸의 LAN 설정이
+        # 테스트로 새어 들어오면 "내 컴퓨터에서만 통과"가 된다.
+        "MESH_NODE_NAME",
+        "MESH_PEER_TOKEN",
+        "MESH_PEERS",
+        "MESH_ALLOW_NETWORK_BIND",
     ):
         monkeypatch.delenv(key, raising=False)
     return data_root

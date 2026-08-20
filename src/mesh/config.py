@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -262,6 +263,52 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"} if raw else default
 
 
+#: 피어 토큰 최소 길이. 짧은 토큰은 없는 것과 같다 — LAN 에서 시도 횟수 제한이 없다.
+MIN_PEER_TOKEN_CHARS = 16
+
+#: 피어 주소 최대 개수. 데모용 상한이고, 넘으면 설정 오류일 가능성이 높다.
+MAX_PEERS = 8
+
+
+def _default_node_name() -> str:
+    """호스트명을 노드 이름으로 쓴다.
+
+    사람이 화면에서 "어느 컴퓨터인지"를 알아야 하고, 대개 호스트명이 그 답이다.
+    실패하면 빈 문자열이 아니라 고정 문자열을 준다 — 이름 없는 노드가 목록에
+    나오면 무엇인지 알 수 없다.
+    """
+    import socket
+
+    with contextlib.suppress(Exception):
+        name = socket.gethostname().split(".")[0].strip()
+        if name:
+            return name
+    return "unknown-node"
+
+
+def _parse_peers(raw: str) -> tuple[str, ...]:
+    """`MESH_PEERS` 파싱. `http`/`https` 만 받고 끝 슬래시를 떼어 낸다.
+
+    스킴을 검사하는 이유: 이 값은 `httpx` 에 그대로 들어간다. 오타로
+    `192.168.0.11:8080` (스킴 없음)을 적으면 상대 경로로 해석되어 조용히
+    자기 자신을 부른다 — 그러면 "피어에 물었는데 내 답이 왔다"가 된다.
+    """
+    peers: list[str] = []
+    for chunk in raw.replace(";", ",").split(","):
+        url = chunk.strip().rstrip("/")
+        if not url:
+            continue
+        if not url.startswith(("http://", "https://")):
+            raise ConfigError(
+                f"MESH_PEERS 항목에 스킴이 없다: {url!r}. http://192.168.0.11:8080 형태로 적으라"
+            )
+        if url not in peers:
+            peers.append(url)
+    if len(peers) > MAX_PEERS:
+        raise ConfigError(f"MESH_PEERS 가 너무 많다 ({len(peers)} > {MAX_PEERS})")
+    return tuple(peers)
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     # 경로 · 바인딩
@@ -297,6 +344,19 @@ class Config:
     confidence_escalate: float
     stale_confidence_factor: float
 
+    # ── 피어 메시 (같은 네트워크의 다른 컴퓨터) ───────────────────────
+    #: 이 노드의 이름. 화면과 피어 목록에 보인다. 기본값은 호스트명이다.
+    node_name: str
+    #: 피어 공유 비밀. **LAN 모드의 유일한 접근 통제다.**
+    #:
+    #: 피어 응답에는 재수화된 실제 이름이 들어간다 (설계 §3.6). 그것이 사내망을
+    #: 건너간다면, 토큰이 없으면 같은 네트워크의 누구나 남의 지식을 조회할 수 있다.
+    #: 그래서 `validate()` 가 **LAN 모드에서 토큰 없이 시작하는 것을 막는다.**
+    peer_token: str | None
+    #: 피어 노드 주소. `MESH_PEERS=http://192.168.0.11:8080,http://192.168.0.12:8080`
+    peers: tuple[str, ...]
+    #: `MESH_BIND_HOST` 가 localhost 가 아닐 때 명시적으로 허용했는지.
+    allow_network_bind: bool
     # 데모 보조
     demo_now: datetime | None
     record_fixtures: bool
@@ -315,6 +375,24 @@ class Config:
         """
         url = self.trusted_zone_llm_base_url.lower()
         return any(h in url for h in _PUBLIC_LLM_HOSTS)
+
+    @property
+    def lan_mode(self) -> bool:
+        """같은 네트워크의 다른 컴퓨터가 이 노드에 닿을 수 있는가.
+
+        `bind_host` 로만 판단한다. 피어 목록이 비어 있어도 **누가 나를 부를 수는**
+        있으므로, 목록 유무로 판단하면 "나는 아무에게도 안 묻는다"가
+        "아무도 나에게 못 묻는다"로 잘못 읽힌다.
+        """
+        return self.bind_host not in _LOCALHOSTS
+
+    @property
+    def uploads_root(self) -> Path:
+        """업로드가 저장되는 뿌리. 사용자에게 보여줄 실제 경로다.
+
+        사람별 하위 디렉터리는 `KnowledgeStore.uploads_dir()` 이 정한다.
+        """
+        return self.corpus_root
 
     @property
     def vocab_path(self) -> Path:
@@ -423,6 +501,10 @@ class Config:
             confidence_auto=_env_float("CONFIDENCE_AUTO", 0.75),
             confidence_escalate=_env_float("CONFIDENCE_ESCALATE", 0.45),
             stale_confidence_factor=_env_float("STALE_CONFIDENCE_FACTOR", 0.8),
+            node_name=_env("MESH_NODE_NAME") or _default_node_name(),
+            peer_token=_env("MESH_PEER_TOKEN") or None,
+            peers=_parse_peers(_env("MESH_PEERS")),
+            allow_network_bind=_env_bool("MESH_ALLOW_NETWORK_BIND"),
             demo_now=demo_now,
             record_fixtures=_env_bool("MESH_RECORD_FIXTURES"),
             fixture_overwrite=_env_bool("MESH_FIXTURE_OVERWRITE"),
@@ -458,12 +540,33 @@ class Config:
                 "make deploy 후 출력값을 .env 에 기입하거나 AGENT_TRANSPORT=direct 로 실행하라"
             )
 
-        if self.bind_host not in _LOCALHOSTS:
+        if self.lan_mode:
+            # ⚠️ **토큰 없이 LAN 모드로 시작할 수 없다.**
+            #
+            #    피어 응답에는 재수화된 실제 이름이 들어간다 (설계 §3.6). 토큰이
+            #    없으면 같은 네트워크의 누구나 남의 지식을 조회할 수 있고, 그러면
+            #    이 도구는 게이트키퍼를 우회하는 지름길이 된다.
+            #
+            #    경고로 두지 않는 이유: 경고는 아무도 읽지 않는다. Day 2 에서
+            #    같은 판단을 했다 (`check_bind_host`).
+            if not self.peer_token:
+                raise ConfigError(
+                    f"MESH_BIND_HOST={self.bind_host} 로 네트워크에 노출하려면 "
+                    "MESH_PEER_TOKEN 이 필요하다.\n"
+                    "  이 서비스는 원문 파일을 읽고 재수화된 실제 이름을 반환한다. "
+                    "토큰이 LAN 모드의 유일한 접근 통제다.\n"
+                    '  -> 토큰 생성:  python -c "import secrets; print(secrets.token_urlsafe(24))"\n'
+                    "  -> 참여하는 모든 컴퓨터에 같은 값을 넣는다"
+                )
+            if len(self.peer_token) < MIN_PEER_TOKEN_CHARS:
+                raise ConfigError(
+                    f"MESH_PEER_TOKEN 이 너무 짧다 ({len(self.peer_token)} < "
+                    f"{MIN_PEER_TOKEN_CHARS}자). LAN 에서는 시도 횟수 제한이 없다"
+                )
             log.warning(
-                "MESH_BIND_HOST 가 localhost 가 아니다. 이 서비스는 원문 파일을 읽고 "
-                "재수화된 실제 이름을 반환한다. 인증이 없는 MVP 에서 네트워크에 노출하면 "
-                "권한 우회 도구가 된다 (BR-M-01)",
-                extra={"bind_host": self.bind_host},
+                "LAN 모드 — 같은 네트워크의 피어가 /api/peer/* 에 접근할 수 있다. "
+                "소유자 표면(문서 목록·감사 로그·저장 경로)은 여전히 loopback 전용이다",
+                extra={"bind_host": self.bind_host, "node_name": self.node_name},
             )
 
         if not 0.0 <= self.confidence_escalate <= self.confidence_auto <= 1.0:

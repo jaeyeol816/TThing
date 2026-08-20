@@ -82,6 +82,8 @@ a { color: var(--accent); }
 .brand { display: flex; align-items: baseline; gap: 8px; }
 .logo { color: var(--accent); font-size: 18px; }
 .brand-name { font-weight: 650; letter-spacing: -0.01em; }
+/* 이름의 세미콜론을 강조한다 — "MIA; But AI got you" 의 전환점이다 */
+.brand-semi { color: var(--accent); font-weight: 700; }
 .brand-sub { color: var(--fg-faint); font-size: 12.5px; }
 
 .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
