@@ -489,7 +489,7 @@ class Config:
             strict: True 면 fail-fast 검증을 수행한다.
                     테스트에서 부분 설정으로 인스턴스를 만들 때 False.
         """
-        data_root_raw = _env("MESH_DATA_ROOT", "./data")
+        data_root_raw = _env("MESH_DATA_ROOT", "./agents")
         data_root = Path(data_root_raw)
 
         demo_now_raw = _env("MESH_DEMO_NOW")
