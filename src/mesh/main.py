@@ -49,6 +49,7 @@ from mesh.agent import AgentClient
 from mesh.api_models import (
     MAX_SEARCH_CHARS,
     AgentCardView,
+    AgentStatusView,
     AskRequest,
     AskResult,
     AuditRowView,
@@ -58,6 +59,8 @@ from mesh.api_models import (
     DocumentList,
     ErrorResponse,
     HealthStatus,
+    HubAskRequest,
+    HubAskResponse,
     InboxItem,
     MergedRulesView,
     OrgChartResponse,
@@ -972,6 +975,33 @@ def _install_routes(app: FastAPI) -> None:
             demo_now_override=cfg.demo_now,
             envelope_cache_size=len(svc.gatekeeper.cache),
             disposition_counts=svc.audit.disposition_counts(),
+        )
+
+    # ── 허브 Ask — 단일 진입점 ───────────────────────────────────────
+
+    @app.post("/api/hub/ask", response_model=HubAskResponse)
+    async def hub_ask(request: Request, body: HubAskRequest) -> HubAskResponse:
+        """내 Agent 가 허브 역할을 하는 단일 Ask 엔드포인트."""
+        svc = _services(request)
+        result = await svc.orchestrator.hub_ask(body.question, body.asker)
+
+        agent_statuses = []
+        for br_result in result.broadcast_results:
+            for r in br_result.results:
+                agent_statuses.append(AgentStatusView(
+                    entity_id=r.entity_id,
+                    agent_label=r.agent_label,
+                    status=r.status,
+                    answer=r.answer,
+                    confidence=r.confidence,
+                ))
+
+        return HubAskResponse(
+            question=result.question,
+            answer=result.answer,
+            used_tool=result.used_tool,
+            disposition=result.disposition,
+            agent_statuses=agent_statuses,
         )
 
     # ── 보안 프로토콜 CRUD ───────────────────────────────────────────

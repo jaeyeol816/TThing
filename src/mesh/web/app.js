@@ -1289,14 +1289,6 @@ function wire() {
 
   $("thread-back").addEventListener("click", () => openThread(BROADCAST_VIEW));
   $("org-reset").addEventListener("click", resetBroadcast);
-
-  $("user-select").addEventListener("change", (e) => {
-    state.currentUser = e.target.value;
-    // 관점이 바뀌면 이전 판정은 남의 것이다. 지운다.
-    resetBroadcast();
-    state.pendingQuestion = "";
-    openThread(BROADCAST_VIEW);
-  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1307,15 +1299,9 @@ async function boot() {
   wire();
 
   try {
-    state.health = await api("/api/health");
-  } catch { state.health = null; }
-  renderHealth();
-
-  try {
     state.users = await api("/api/users");
     if (state.users.length > 0) state.currentUser = state.users[0].entity_id;
   } catch { state.users = []; }
-  renderUsers();
 
   try {
     state.agents = await api("/api/agents");
