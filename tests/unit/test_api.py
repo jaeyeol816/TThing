@@ -354,6 +354,85 @@ def test_broadcast_rejects_a_blank_question(client):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# /api/me · /api/ask/consult — 내 Agent 가 대신 물어본다
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_me_is_a_registered_agent(client, wiring):
+    """화면이 "첫 번째가 나겠지" 하고 짐작하지 않게 서버가 알려준다."""
+    me = client.get("/api/me").json()
+    assert me["entity_id"] in wiring.data.agents
+    assert me["display_name"]
+
+
+def test_consult_collects_answers_and_writes_a_digest(client):
+    r = client.post(
+        "/api/ask/consult",
+        json={"question": QUESTION, "asker": "person:oh"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["consulted"], "아무에게도 묻지 않았다"
+    assert body["digest"], "정리가 비어 있다"
+    # 정리만 주면 사용자가 그 정리를 검증할 수 없다 — 원답변이 함께 와야 한다
+    assert len(body["answers"]) == len(body["consulted"])
+    assert all(a["agent_label"] for a in body["answers"])
+
+
+def test_consult_respects_the_server_side_target_cap(client, wiring, monkeypatch):
+    """후보로 보여주는 것은 공짜지만 묻는 것은 매번 경계를 넘는 일이다.
+
+    `Config` 가 frozen 이라 값을 바꿀 수 없다 (그게 맞다 — 설정이 실행 중에
+    바뀌면 감사 로그의 근거가 흔들린다). 사본을 만들어 갈아 끼운다.
+    """
+    import dataclasses
+
+    monkeypatch.setattr(
+        wiring.orchestrator, "cfg", dataclasses.replace(wiring.cfg, consult_max_targets=1)
+    )
+    body = client.post(
+        "/api/ask/consult",
+        json={"question": QUESTION, "asker": "person:oh", "max_targets": 8},
+    ).json()
+    assert len(body["consulted"]) <= 1
+
+
+def test_consult_honours_explicit_targets(client):
+    """지목은 여전히 사람이 할 수 있다 (FR-29) — 그때는 선별을 건너뛴다."""
+    body = client.post(
+        "/api/ask/consult",
+        json={"question": QUESTION, "asker": "person:oh", "targets": ["person:kim"]},
+    ).json()
+    assert body["consulted"] == ["person:kim"]
+    assert body["broadcast"] is None
+
+
+def test_consult_digest_never_crosses_the_boundary(client, wiring):
+    """🔴 정리의 재료는 **이미 재수화된 평문**이다.
+
+    그것을 경계 밖 모델에 보내면 재수화가 무의미해진다. 정리를 만드는 동안
+    경계 밖 호출이 늘지 않는 것이 그 증거다.
+    """
+    before = len(wiring.fake_broker.calls)
+    client.post("/api/ask/consult", json={"question": QUESTION, "asker": "person:oh"})
+    after = len(wiring.fake_broker.calls)
+    # 사람마다 한 번씩은 경계를 넘는다. 정리를 위한 **추가** 호출이 없어야 한다.
+    body = client.post(
+        "/api/ask/consult", json={"question": QUESTION, "asker": "person:oh"}
+    ).json()
+    per_person = after - before
+    assert per_person <= len(body["consulted"]) + 1, "정리가 경계 밖 모델을 불렀다"
+
+
+def test_consult_response_has_no_document_paths(client):
+    blob = client.post(
+        "/api/ask/consult", json={"question": QUESTION, "asker": "person:oh"}
+    ).text
+    for leak in ("internal_path", "corpus/", "person_kim/"):
+        assert leak not in blob, leak
+
+
+# ══════════════════════════════════════════════════════════════════════
 # /api/trace — 처리 경과
 # ══════════════════════════════════════════════════════════════════════
 

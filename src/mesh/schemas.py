@@ -405,6 +405,10 @@ class TierDecision(BaseModel):
     reasons: tuple[str, ...] = ()
     exaone_skipped: bool = False  # 규칙이 이미 SECRET
     exaone_failed: bool = False  # 실패 -> SECRET 으로 간주됨
+    #: **몇 번 규칙에서 확정됐는가** (1~6). 규칙은 앞에서 걸리면 뒤를 보지 않으므로
+    #: 이 번호 하나가 "앞의 규칙은 미해당, 뒤의 규칙은 검사하지 않음" 을 뜻한다.
+    #: 화면이 판정 과정을 검증 6단계처럼 펼쳐 보여줄 때 쓴다.
+    rule_number: int | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════

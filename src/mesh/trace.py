@@ -138,6 +138,11 @@ class TraceEvidence(BaseModel):
     rule_tier: Tier | None = None
     exaone_tier: Tier | None = None
     exaone_note: str = ""
+    #: 몇 번 규칙에서 확정됐는가 (1~6). 판정 과정을 단계별로 펼칠 때 쓴다.
+    rule_number: int | None = None
+    #: EXAONE 을 부르지 않았는가 / 불렀는데 실패했는가.
+    exaone_skipped: bool = False
+    exaone_failed: bool = False
     reasons: tuple[str, ...] = ()
 
     @property
@@ -183,6 +188,12 @@ class TracePanel(BaseModel):
     #: 규칙에 따라 가려진 항목 수. 0 이 아니면 화면이 "N건 비공개" 를 그린다.
     #: 숨겼다는 사실 자체를 숨기지 않는다.
     redacted_count: int = 0
+
+    #: `json` 패널에서 **눈에 띄게 칠할 문자열**. 치환으로 들어간 기호들이다.
+    #:
+    #: 값이 아니라 **기호**만 담긴다 (`<PERSON_1>`, `COMP_A`). 실제 이름을 여기
+    #: 넣으면 화면 강조가 매핑표를 우회해 값을 공개하는 셈이 된다.
+    highlight: tuple[str, ...] = ()
 
 
 class TraceStage(BaseModel):
@@ -297,6 +308,128 @@ def mapping_rows(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 등급 판정 과정 — 검증 6단계와 같은 모양으로 펼친다
+# ══════════════════════════════════════════════════════════════════════
+#
+# `classifier.rule_tier()` 는 **앞에서 걸리면 뒤를 보지 않는다.** 그래서
+# "몇 번에서 확정됐는가" 하나로 여섯 단계 전체의 상태가 정해진다.
+#
+#     확정 번호보다 앞  ->  검사했고 **해당 없음**
+#     확정 번호         ->  **여기서 걸렸다**
+#     확정 번호보다 뒤  ->  **검사하지 않았다** (앞에서 이미 정해졌다)
+#
+# 이 사실을 화면이 그대로 보여주는 것이 중요하다. 여섯 줄 중 하나만 색이
+# 다르면, 왜 그 등급인지가 문장이 아니라 **표**로 읽힌다.
+
+#: (번호, 이름, 무엇을 보는가, 걸리면 어떤 등급인가)
+CLASSIFY_RULES: tuple[tuple[int, str, str, str], ...] = (
+    (1, "경로 규칙 (기밀)", "파일이 기밀 디렉터리 아래에 있는가", "기밀"),
+    (2, "금칙어 리터럴", "본문에 고객사명·인증방식명이 있는가", "기밀"),
+    (3, "금칙어 정규식", "본문에 계약번호·요구사항번호·금액이 있는가", "기밀"),
+    (4, "헤더 등급 표기", "작성자가 문서 머리에 등급을 적었는가", "표기된 등급"),
+    (5, "경로 규칙 (사내)", "파일이 사내 디렉터리 아래에 있는가", "사내"),
+    (6, "기본값", "위 어디에도 걸리지 않았다", "사내"),
+)
+
+
+def rule_step_rows(
+    *,
+    rule_number: int | None,
+    rule_tier: Tier | None,
+    final_tier: Tier,
+    exaone_tier: Tier | None,
+    exaone_skipped: bool,
+    exaone_failed: bool,
+    reasons: Iterable[str],
+) -> tuple[TraceRow, ...]:
+    """규칙 6단계 + EXAONE + 최종을 한 표로 편다.
+
+    ⚠️ `reasons` 는 `redact_reasons()` 를 통과시킨다 — 매치된 경로·금칙어가
+       화면에 뜨면 이 표가 유출 채널이 된다 (파일 머리말 §④).
+    """
+    hit_reason = "; ".join(redact_reasons(reasons)) or "—"
+    rows: list[TraceRow] = []
+
+    for number, name, looks_at, outcome in CLASSIFY_RULES:
+        if rule_number is None:
+            verdict, detail, status = "—", looks_at, "info"
+        elif number < rule_number:
+            verdict, detail, status = "해당 없음", looks_at, "pass"
+        elif number == rule_number:
+            verdict = "걸림"
+            detail = hit_reason
+            # 걸린 것이 나쁜 것은 아니다 — 기밀로 확정됐을 때만 주의색을 준다.
+            status = "warn" if (rule_tier or final_tier) is Tier.SECRET else "pass"
+        else:
+            verdict, detail, status = "검사 안 함", f"{rule_number}번에서 확정됐다", "info"
+        rows.append(
+            TraceRow(cells=(f"{number}. {name}", verdict, detail, outcome), status=status)
+        )
+
+    if exaone_skipped:
+        ex_verdict = "생략"
+        ex_detail = (
+            "규칙이 이미 기밀이다 — 더 높은 등급이 없으므로 왕복을 절약한다 (BR-C-02)"
+            if (rule_tier is Tier.SECRET)
+            else "보조 판정이 꺼져 있다 (오프라인 · 게이트 측정)"
+        )
+        ex_status = "info"
+    elif exaone_failed:
+        ex_verdict, ex_detail, ex_status = (
+            "실패",
+            "판정하지 못했다 → 기밀로 간주한다 (fail closed, BR-G-01)",
+            "warn",
+        )
+    elif exaone_tier is not None:
+        ex_verdict, ex_detail, ex_status = (
+            exaone_tier.label_ko,
+            "규칙이 모르는 형태의 기밀을 잡으라고 있는 층이다",
+            "pass",
+        )
+    else:
+        ex_verdict, ex_detail, ex_status = "—", "부르지 않았다", "info"
+
+    rows.append(
+        TraceRow(cells=("EXAONE 보조 판정", ex_verdict, ex_detail, "더 높으면 상향"),
+                 status=ex_status)
+    )
+    rows.append(
+        TraceRow(
+            cells=(
+                "최종",
+                final_tier.label_ko,
+                f"max(규칙 {(rule_tier or final_tier).label_ko}, "
+                f"EXAONE {exaone_tier.label_ko if exaone_tier else '—'})",
+                "둘 중 높은 쪽",
+            ),
+            status="warn" if final_tier is Tier.SECRET else "pass",
+        )
+    )
+    return tuple(rows)
+
+
+#: 기호의 앞부분 -> 무엇을 가린 것인가. 값을 말하지 않고 **범주**만 말한다.
+_SYMBOL_KINDS: tuple[tuple[str, str], ...] = (
+    ("PERSON", "사람 이름"),
+    ("PROJ", "프로젝트명"),
+    ("SYS", "시스템명"),
+    ("TEAM", "팀 이름"),
+    ("REQ", "요구사항 문서 참조"),
+    ("COMP", "우리 구성요소 문서 참조"),
+    ("DOC", "문서 참조"),
+)
+
+
+def symbol_kind(symbol: str) -> str:
+    """`<PERSON_1>` -> "사람 이름". 값을 말하지 않고 범주만 말한다."""
+    bare = symbol.strip("<>").upper()
+    for prefix, label in _SYMBOL_KINDS:
+        if bare.startswith(prefix):
+            return label
+    return "치환된 식별자"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 기록기
 # ══════════════════════════════════════════════════════════════════════
 
@@ -401,7 +534,6 @@ class TraceRecorder:
                     question_decision.rule_tier.label_ko,
                     _tier_or_dash(question_decision.exaone_tier, question_decision),
                     question_decision.tier.label_ko,
-                    "; ".join(redact_reasons(question_decision.reasons)) or "규칙 해당 없음",
                 ),
                 status="warn" if question_decision.tier is Tier.SECRET else "info",
             )
@@ -414,39 +546,88 @@ class TraceRecorder:
                         item.rule_tier.label_ko if item.rule_tier else "—",
                         item.exaone_tier.label_ko if item.exaone_tier else (item.exaone_note or "—"),
                         item.effective_tier.label_ko,
-                        # ⚠️ 여기서 한 번 더 가린다. 호출자가 투영을 만들 때 걸렀더라도
-                        #    이 줄이 마지막 관문이다 — 새 호출자가 생겨도 새지 않는다.
-                        "; ".join(redact_reasons(item.reasons)) or "규칙 해당 없음",
                     ),
                     status="warn" if item.effective_tier is Tier.SECRET else "info",
                 )
             )
 
         self.tier = effective
+
+        # 대상마다 **판정 과정 표**를 하나씩 만든다. 검증 6단계와 같은 모양이다 —
+        # 왜 그 등급인지가 문장이 아니라 표로 읽혀야 한다.
+        panels: list[TracePanel] = [
+            TracePanel(
+                panel_id="classify-summary",
+                label="한눈에",
+                kind="table",
+                caption=(
+                    "규칙과 EXAONE 중 **더 높은 쪽**을 택한다 (BR-C-03). 애매하면 항상 높은 "
+                    "등급으로 — 낮게 잡은 실수는 유출이고 높게 잡은 실수는 불편이다. "
+                    "질의 전체의 등급은 여기 나온 것 중 **가장 높은 것**이 된다."
+                ),
+                columns=("대상", "규칙", "EXAONE", "최종"),
+                rows=tuple(rows),
+            ),
+            TracePanel(
+                panel_id="classify-question-steps",
+                label="질문 문장 — 판정 과정",
+                kind="table",
+                caption=(
+                    "규칙은 **앞에서 걸리면 뒤를 보지 않는다.** 그래서 걸린 번호 하나로 "
+                    "여섯 단계 전체의 상태가 정해진다. 질문도 판정 대상인 이유: 지식을 "
+                    "아무리 잘 막아도 질문 문장이 기밀을 담고 있으면 그대로 새어 나간다."
+                ),
+                columns=("검사", "결과", "내용", "걸리면"),
+                rows=rule_step_rows(
+                    rule_number=question_decision.rule_number,
+                    rule_tier=question_decision.rule_tier,
+                    final_tier=question_decision.tier,
+                    exaone_tier=question_decision.exaone_tier,
+                    exaone_skipped=question_decision.exaone_skipped,
+                    exaone_failed=question_decision.exaone_failed,
+                    reasons=question_decision.reasons,
+                ),
+            ),
+        ]
+
+        for index, item in enumerate(evidence):
+            panels.append(
+                TracePanel(
+                    panel_id=f"classify-steps-{index}",
+                    label=f"{item.title} — 판정 과정",
+                    kind="table",
+                    caption=(
+                        "**매치된 값은 싣지 않는다.** 1번에 걸렸다면 경로가, 2번에 걸렸다면 "
+                        "금칙어가 화면에 뜨게 되는데, 그 둘이야말로 이 시스템이 내보내지 "
+                        "않으려는 것이다. 어떤 규칙이 걸렸는지까지만 말한다."
+                    ),
+                    columns=("검사", "결과", "내용", "걸리면"),
+                    rows=rule_step_rows(
+                        rule_number=item.rule_number,
+                        rule_tier=item.rule_tier,
+                        final_tier=item.effective_tier,
+                        exaone_tier=item.exaone_tier,
+                        exaone_skipped=item.exaone_skipped,
+                        exaone_failed=item.exaone_failed,
+                        reasons=item.reasons,
+                    ),
+                )
+            )
+
+        panels.append(
+            TracePanel(
+                panel_id="classify-note",
+                label="이 등급이 뜻하는 것",
+                kind="note",
+                text=_tier_meaning(effective),
+            )
+        )
+
         self.put(
             "classify",
             status="pass",
             summary=f"최종 {effective.label_ko} — 근거 {len(evidence)}건 판정",
-            panels=(
-                TracePanel(
-                    panel_id="classify-table",
-                    label="판정 근거",
-                    kind="table",
-                    caption=(
-                        "규칙과 EXAONE 중 **더 높은 쪽**을 택한다 (BR-C-03). "
-                        "애매하면 항상 높은 등급으로 — 낮게 잡은 실수는 유출이고 "
-                        "높게 잡은 실수는 불편이다."
-                    ),
-                    columns=("대상", "규칙", "EXAONE", "최종", "사유"),
-                    rows=tuple(rows),
-                ),
-                TracePanel(
-                    panel_id="classify-note",
-                    label="이 등급이 뜻하는 것",
-                    kind="note",
-                    text=_tier_meaning(effective),
-                ),
-            ),
+            panels=tuple(panels),
         )
 
     # ── ② 근거 선택 ──────────────────────────────────────────────────
@@ -520,9 +701,22 @@ class TraceRecorder:
         """
         self.representation = env.representation
         table = dict(mapping_table or {})
+
+        # ⚠️ 여기서 값을 보여주지 않는 이유는 "답변에 없어서" 가 **아니다.**
+        #    이 시점에는 답변이 아직 오지도 않았다 — 경계를 넘기 직전이다.
+        #    (예전 문구가 "답변에 등장하지 않음" 이었고, 그것은 ⑥ 재수화의
+        #     규칙을 여기에 잘못 옮긴 것이었다.)
+        #
+        #    진짜 이유: 이 표에는 답변에 쓰이지 **않을** 문서 제목과 인명까지
+        #    들어 있다. 전부 펼치면 "그 사람 파일에 무엇이 있는지" 가 새어 나간다.
+        #    그래서 여기서는 **무엇을 가린 것인지(범주)** 까지만 말하고,
+        #    실제 값은 ⑥ 재수화에서 **답변에 등장한 것만** 연다.
         rows = tuple(
-            TraceRow(cells=(symbol, "(답변에 등장하지 않음 — 비공개)"), status="info")
-            for symbol, _value, _shown in mapping_rows(table)
+            TraceRow(
+                cells=(symbol, symbol_kind(symbol), "⑥ 재수화 — 답변에 등장하면 공개"),
+                status="info",
+            )
+            for symbol in sorted(table, key=len, reverse=True)
         )
         self.put(
             "transform",
@@ -533,8 +727,19 @@ class TraceRecorder:
                     panel_id="transform-payload",
                     label="경계를 넘는 것 (전문)",
                     kind="json",
-                    caption=_representation_caption(env.representation),
+                    caption=(
+                        _representation_caption(env.representation)
+                        + (
+                            "  **붉게 칠한 것이 치환된 자리다** — 그 자리에 원래 있던 값은 "
+                            "경계를 넘지 않았고, 신뢰 구역의 매핑표에만 있다."
+                            if table
+                            else ""
+                        )
+                    ),
                     json_text=json.dumps(env.payload, ensure_ascii=False, indent=2),
+                    # 화면이 칠할 것은 **기호**뿐이다. 실제 이름을 여기 넣으면
+                    # 강조가 매핑표를 우회해 값을 공개하는 셈이 된다.
+                    highlight=tuple(sorted(table, key=len, reverse=True)),
                 ),
                 TracePanel(
                     panel_id="transform-mapping",
@@ -542,9 +747,12 @@ class TraceRecorder:
                     kind="table",
                     caption=(
                         "기호 ↔ 실제 이름의 대응표. **앱 메모리에만 있고 응답 후 폐기된다** "
-                        "(BR-G-09). 값은 재수화 단계에서 답변에 등장한 것만 공개한다."
+                        "(BR-G-09).\n\n여기서 값을 감추는 이유는 '답변에 없어서' 가 아니다 — "
+                        "**이 시점에는 답변이 아직 오지 않았다.** 이 표에는 답변에 쓰이지 않을 "
+                        "문서 제목과 인명까지 들어 있어서, 전부 펼치면 그 사람의 파일에 무엇이 "
+                        "있는지가 새어 나간다. 실제 값은 **⑥ 재수화에서 답변에 등장한 것만** 연다."
                     ),
-                    columns=("기호", "값"),
+                    columns=("기호", "무엇을 가렸나", "값이 열리는 시점"),
                     rows=rows,
                     redacted_count=len(table),
                 ),
@@ -617,23 +825,53 @@ class TraceRecorder:
         endpoint: str = "",
         sent: bool = True,
         note: str = "",
+        latency_ms: int | None = None,
+        usage: dict[str, object] | None = None,
+        failed: bool = False,
     ) -> None:
-        self.crossed_boundary = sent
-        rows = (
-            TraceRow(cells=("전송 여부", "나갔음" if sent else "나가지 않음"),
-                     status="warn" if sent else "pass"),
+        self.crossed_boundary = sent and not failed
+        rows: list[TraceRow] = [
+            TraceRow(
+                cells=("전송 여부", "나갔음" if sent else "나가지 않음"),
+                status="warn" if sent else "pass",
+            ),
             TraceRow(cells=("경로", transport)),
             TraceRow(cells=("모델", model_id)),
             TraceRow(cells=("엔드포인트", endpoint or "(전송 없음)")),
             TraceRow(cells=("승인자", approved_by)),
             TraceRow(cells=("크기", f"{env.size_bytes:,} bytes")),
-            TraceRow(cells=("페이로드 해시", env.payload_sha256[:32] + "…")),
-            TraceRow(cells=("봉투 ID", env.envelope_id)),
-        )
+        ]
+
+        # 왕복 시간. 사람이 기다린 시간의 대부분이 여기다 — 어느 단계가 느린지
+        # 물으면 답할 수 있어야 한다.
+        if latency_ms is not None:
+            rows.append(
+                TraceRow(
+                    cells=("Agent 응답 시간", f"{latency_ms:,} ms ({latency_ms / 1000:.2f}초)"),
+                    status="warn" if latency_ms >= 10_000 else "pass",
+                )
+            )
+        if failed:
+            rows.append(
+                TraceRow(cells=("결과", "호출 실패 — 신뢰 구역 안에서 답했다"), status="fail")
+            )
+        if usage:
+            tokens = ", ".join(
+                f"{k} {v}" for k, v in usage.items() if isinstance(v, int | float)
+            )
+            if tokens:
+                rows.append(TraceRow(cells=("토큰 사용량", tokens)))
+
+        rows.append(TraceRow(cells=("페이로드 해시", env.payload_sha256[:32] + "…")))
+        rows.append(TraceRow(cells=("봉투 ID", env.envelope_id)))
+        rows = tuple(rows)  # type: ignore[assignment]
+        took = f" · {latency_ms:,}ms" if latency_ms is not None else ""
         self.put(
             "dispatch",
-            status="warn" if sent else "pass",
-            summary=("경계 통과 — " + transport) if sent else "경계를 넘지 않음",
+            status="fail" if failed else ("warn" if sent else "pass"),
+            summary=(
+                ("경계 통과 — " + transport + took) if sent else "경계를 넘지 않음"
+            ),
             crosses_boundary=sent,
             panels=(
                 TracePanel(

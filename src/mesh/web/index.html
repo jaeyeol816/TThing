@@ -21,15 +21,27 @@
         <span class="brand-name">MIA</span>
         <span class="brand-sub">; but AI got you</span>
       </div>
+      <div class="header-actions">
+        <button type="button" class="btn btn-sm" id="restart-btn"
+                title="데모를 처음 상태로 되돌립니다">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+          처음으로
+        </button>
+        <button type="button" class="btn btn-sm protocol-btn" id="protocol-btn"
+                title="보안 프로토콜 관리">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          보안 프로토콜
+        </button>
+      </div>
     </header>
 
     <!-- 지금 누구와 이야기하고 있는가. 브로드캐스트 중에는 상태를 표시한다. -->
     <div class="thread-bar" id="thread-bar" aria-live="polite">
       <div class="thread-who" id="thread-who">
-        <span class="thread-title">전체에게 묻기</span>
-        <span class="thread-sub">질문을 보내면 모든 사람의 Agent 가 먼저 판단합니다</span>
+        <span class="thread-title">내 Agent</span>
+        <span class="thread-sub">질문을 맡기면 답할 수 있는 동료의 Agent 를 찾아 대신 물어봅니다</span>
       </div>
-      <button type="button" class="btn btn-ghost btn-sm" id="thread-back" hidden>← 전체에게 묻기</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="thread-back" hidden>← 내 Agent</button>
     </div>
 
     <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
@@ -81,6 +93,11 @@
       <!-- JS가 채운다 -->
     </div>
 
+    <div class="org-footer">
+      <p class="org-note" id="org-note">
+        이름을 누르면 그 사람의 Agent 와 직접 대화합니다.
+      </p>
+    </div>
   </aside>
 
 </div>
