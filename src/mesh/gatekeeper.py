@@ -737,22 +737,25 @@ class Gatekeeper:
 
     # ── Passthrough — 구조 추출 없이 직접 전달 ────────────────────────
 
-    def to_payload_passthrough(
+    async def to_payload_passthrough(
         self, call: AgentCall, chunks: list[Chunk], question: str
     ) -> tuple[PayloadEnvelope, Mapping]:
         """구조 추출 없이 질문과 근거를 직접 페이로드로 만든다.
 
         ⚠️ SECRET 등급에서는 절대 사용하지 않는다 — 호출자가 보장한다.
 
-        INTERNAL 에서는 가명화를 적용하고, OPEN 에서는 원문 그대로 보낸다.
-        구조 추출(슬롯 채우기)을 거치지 않으므로 vocab.json 제약 없이 동작한다.
+        INTERNAL 에서는 EXAONE 기반 보수적 가명화를 적용하고,
+        OPEN 에서는 원문 그대로 보낸다.
         """
         used = [c for c in chunks if not call.chunk_ids or c.chunk_id in call.chunk_ids]
         if not used:
             used = chunks[:3]  # 최소한 일부라도 사용
 
         if call.tier is Tier.INTERNAL:
-            pseudo = pseudonymize([c.text for c in used], self.data.pseudonyms)
+            # to_payload 와 동일한 보수적 가명화 경로 (EXAONE span 포함)
+            pseudo = await apply_conservative(
+                [c.text for c in used], self.data.pseudonyms, self.exaone
+            )
             texts = pseudo.texts
             mapping = pseudo.mapping
             representation = Representation.PSEUDONYMIZED

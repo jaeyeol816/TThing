@@ -1008,7 +1008,7 @@ function updateSelectionHint() {
       .join(", ");
     hint.textContent = `선택 ${state.selectedTargets.size}명에게만 질의합니다: ${names} · ESC 또는 Ctrl+클릭으로 해제`;
   } else if (state.forceBroadcast) {
-    hint.textContent = "Always broadcasting — 질문은 항상 전원에게 전달됩니다";
+    hint.textContent = "Always broadcasting";
   } else {
     hint.textContent = "Enter 전송 · Shift+Enter 줄바꿈";
   }

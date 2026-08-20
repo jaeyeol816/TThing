@@ -1173,7 +1173,7 @@ class Orchestrator:
                     task_schema_id="passthrough",
                     chunk_ids=tuple(c.chunk_id for c in classified),
                 )
-                env, mapping = self.gatekeeper.to_payload_passthrough(
+                env, mapping = await self.gatekeeper.to_payload_passthrough(
                     call, classified, request.question
                 )
                 originals = tuple(c.text for c in classified)
@@ -1297,7 +1297,7 @@ class Orchestrator:
                     "채우지 못했다는 뜻이다. 사내 등급이므로 식별자 치환을 거쳐 나간다. "
                     "⚠️ 기밀 등급이었다면 여기서 전송이 멈춘다."
                 )
-                env, mapping = self.gatekeeper.to_payload_passthrough(
+                env, mapping = await self.gatekeeper.to_payload_passthrough(
                     call, classified, request.question
                 )
         originals = tuple(c.text for c in classified)
