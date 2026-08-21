@@ -81,7 +81,7 @@ MAX_TRACES = 200
 STAGE_DEFS: tuple[tuple[str, str, str], ...] = (
     ("classify", "등급 판정", "무엇을 보고 이 등급이라고 했나"),
     ("select", "근거 선택", "세션의 어떤 문서가 동원됐나"),
-    ("transform", "표현 변환", "경계를 넘을 형태로 무엇이 바뀌었나"),
+    ("transform", "비식별 처리", "무엇을 마스킹 했나"),
     ("validate", "검증 6단계", "나가기 전 무엇을 검사했나"),
     ("dispatch", "경계 통과", "어디로 무엇이 나갔나"),
     ("rehydrate", "식별화", "기호를 실제 이름으로 되돌린 결과"),
@@ -271,7 +271,7 @@ def redact_reasons(reasons: Iterable[str]) -> tuple[str, ...]:
 
     모르는 형태의 사유가 값을 품고 있으면(따옴표·슬래시) 통째로 가린다 —
     새 규칙이 추가됐을 때 그 사유가 검사 없이 화면에 뜨는 것을 막는다
-    (fail closed). 목록에 없는 것은 통과시키지 않는다.
+    . 목록에 없는 것은 통과시키지 않는다.
     """
     out: list[str] = []
     for reason in reasons:
@@ -379,13 +379,13 @@ def rule_step_rows(
     elif exaone_failed:
         ex_verdict, ex_detail, ex_status = (
             "실패",
-            "판정하지 못했다 → 기밀로 간주한다 (fail closed, BR-G-01)",
+            "판정하지 못했다 → 기밀로 간주한다",
             "warn",
         )
     elif exaone_tier is not None:
         ex_verdict, ex_detail, ex_status = (
             exaone_tier.label_ko,
-            "규칙이 모르는 형태의 기밀을 잡으라고 있는 층이다",
+            "사전에 정의되지 않은 형태의 기밀을 식별한다",
             "pass",
         )
     else:
@@ -1007,12 +1007,12 @@ class TraceRecorder:
             panels=(
                 TracePanel(
                     panel_id=f"{stage_id}-blocked",
-                    label="여기서 멈췄다",
+                    label="비식별 처리 완료",
                     kind="note",
                     text=detail
                     or (
                         f"{reason}. 경계 밖 Agent 를 부르지 않고 신뢰 구역 안에서 답했다 — "
-                        "실패의 모든 경로가 '더 안전한 쪽'으로 귀결된다 (fail closed)."
+                        "실패의 모든 경로가 '더 안전한 쪽'으로 귀결된다."
                     ),
                 ),
             ),

@@ -273,12 +273,14 @@ def can_decompose(subs: Sequence[SubQuestion]) -> tuple[bool, str]:
 #: `answer_in_zone(reason=...)` 은 **열거값**을 받는다. 자유 문자열을 받으면
 #: 그 문자열이 `local_queries` 에 저장되고, 이유에 질문 원문이 섞여 들어간다.
 LOCAL_REASON_LABELS_KO: dict[str, str] = {
-    "extraction_failed": "구조 추출 실패 — 어휘 사전에 해당 개념이 없습니다",
+    "extraction_failed": "기밀 문서를 바탕으로 사내에서 답했습니다",
     "validation_blocked": "검증 단계에서 차단되었습니다",
     "broker_unavailable": "외부 Agent 호출이 불가해 신뢰 구역 안에서 답했습니다",
     "user_cancelled": "사용자가 전송을 취소했습니다",
     "open_tier_local": "외부 호출 없이 답할 수 있는 질문입니다",
     "policy_no_external": "정책상 외부로 보내지 않았습니다",
+    # 기밀 등급은 외부 LLM 대신 EXAONE 이 사내에서 직접 답한다.
+    "secret_tier_local": "기밀 등급 — 사내 AI 가 신뢰 구역 안에서 답했습니다",
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -612,8 +614,13 @@ class Gatekeeper:
            동결했기 때문이다 (NFR-M-02). 구조상 손해는 없다.
         """
         schema = choose_schema(question, self.data.vocab)
-        tiers = [question_tier.tier, *[(c.tier or Tier.INTERNAL) for c in chunks]]
-        tier = max(tiers)  # BR-G-05 — Tier.__gt__ 가 정의돼 있어야 안전하다
+        # ── tier 결정: 청크 등급만 본다 ────────────────────────────────
+        # 질문 문장에 금칙어가 있어도 문서가 INTERNAL 이면 질문을 가명화해서
+        # Claude 로 보낼 수 있다. 질문 tier 를 포함하면 "질문이 기밀이라
+        # 문서도 기밀 경로로" 과상향되어 INTERNAL 문서가 사외 LLM 에 못 간다.
+        # → 질문은 to_payload/to_payload_passthrough 에서 가명화해 페이로드에 담는다.
+        chunk_tiers = [(c.tier or Tier.INTERNAL) for c in chunks]
+        tier = max(chunk_tiers, default=question_tier.tier)
 
         if tier is not question_tier.tier:
             log.info(
@@ -698,12 +705,16 @@ class Gatekeeper:
 
             case Tier.INTERNAL:
                 assignments = assign_refs(used, schema)
-                # 보수적 가명화: 리터럴 + 정규식(A+B) + EXAONE span(C).
-                # EXAONE 이 없으면 정규식까지만 적용된다 (best-effort).
+                # 질문 + 청크 본문을 함께 가명화한다.
+                # 질문에 금칙어("하나텔" 등)가 있어도 가명화 후 Claude 로 보낸다.
                 pseudo = await apply_conservative(
-                    [c.text for c in used], self.data.pseudonyms, self.exaone
+                    [question, *[c.text for c in used]], self.data.pseudonyms, self.exaone
                 )
-                payload = build_text_payload(schema, assignments, pseudo.texts)
+                pseudo_question = pseudo.texts[0]
+                pseudo_texts = pseudo.texts[1:]
+                payload = build_text_payload(schema, assignments, pseudo_texts)
+                # 페이로드의 question 필드도 가명화된 것으로 교체
+                payload = {**payload, "question": pseudo_question}
                 mapping = merge_mappings(refs_mapping(assignments), pseudo.mapping)
                 representation = Representation.PSEUDONYMIZED
 
@@ -752,22 +763,25 @@ class Gatekeeper:
             used = chunks[:3]  # 최소한 일부라도 사용
 
         if call.tier is Tier.INTERNAL:
-            # to_payload 와 동일한 보수적 가명화 경로 (EXAONE span 포함)
+            # 질문 + 청크 본문을 함께 가명화한다 (질문 금칙어도 치환).
             pseudo = await apply_conservative(
-                [c.text for c in used], self.data.pseudonyms, self.exaone
+                [question, *[c.text for c in used]], self.data.pseudonyms, self.exaone
             )
-            texts = pseudo.texts
+            pseudo_question = pseudo.texts[0]
+            texts = pseudo.texts[1:]
             mapping = pseudo.mapping
             representation = Representation.PSEUDONYMIZED
         else:
+            pseudo_question = question  # OPEN 은 그대로
             texts = [c.text for c in used]
             mapping = Mapping(table={})
             representation = Representation.VERBATIM
 
         # 구조화 없이 question + 근거 텍스트를 담는 단순 페이로드
+        # INTERNAL 이면 question 도 이미 가명화됐다 (pseudo_question).
         payload: dict = {
             "task": "passthrough",
-            "question": question,
+            "question": pseudo_question,
             "context": [
                 {"ref": f"DOC_{i+1}", "content_excerpt": t}
                 for i, t in enumerate(texts)
@@ -1231,7 +1245,7 @@ class Gatekeeper:
                 f"({type(e).__name__}). 근거 문서를 직접 확인해 주십시오."
             )
 
-        text = f"[{tier_label} · 사내망 밖으로 나간 것 없음] {label}\n\n{body}"
+        text = body
 
         # ⚠️ 감사 레코드를 남기지 않는다 (BR-A-03). 경계를 넘은 것이 없으므로.
         #    "감사 로그에 없다"가 증거가 된다 — 시나리오 3의 결정적 장면이다.

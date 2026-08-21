@@ -785,9 +785,12 @@ async def generate_dynamic_schema(
     if not slot_defs:
         raise ExtractionFailed("동적 스키마의 슬롯이 모두 형식 검사에서 탈락했다")
 
-    # 최소 하나는 required — extract() 의 필수 슬롯 충족 판정이 의미를 가지려면.
-    if not any(s.required for s in slot_defs):
-        slot_defs[0] = slot_defs[0].model_copy(update={"required": True})
+    # PoC: 동적 스키마는 required 를 전부 false 로 강제한다.
+    # EXAONE 이 제안한 슬롯 이름·허용값이 실제 문서 내용과 정확히 맞지 않으면
+    # `__unknown__` 으로 채워지고 required 슬롯이 미충족되어 ExtractionFailed 가
+    # 난다. 동적 생성이라 "반드시 이 정보가 있어야 한다"는 근거가 없으므로
+    # 뭐든 채운 것이 있으면 그대로 씁니다.
+    slot_defs = [s.model_copy(update={"required": False}) for s in slot_defs]
 
     schema_id = f"dyn_{owner.replace(':', '_')}_{uuid.uuid4().hex[:8]}"
     schema = TaskSchema(

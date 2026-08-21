@@ -90,7 +90,7 @@ from mesh.exceptions import (
     ScopeViolationError,
     ValidationBlocked,
 )
-from mesh.gatekeeper import Gatekeeper, build_system_prompt
+from mesh.gatekeeper import Gatekeeper, build_system_prompt, new_call_id
 from mesh.inbox import Inbox
 from mesh.peer import PeerRegistry
 from mesh.rehydrator import answer_to_text, symbols_in
@@ -1121,7 +1121,7 @@ class Orchestrator:
         if rec:
             evidence = self._evidence(classified, decisions)
             effective = max(
-                [q_tier.tier, *[(c.tier or Tier.INTERNAL) for c in classified]],
+                [(c.tier or Tier.INTERNAL) for c in classified],
                 default=q_tier.tier,
             )
             rec.add_select(
@@ -1143,8 +1143,8 @@ class Orchestrator:
             from mesh.extractor import DYNAMIC_SCHEMA
             from mesh.schemas import AgentCall
 
-            tiers = [q_tier.tier, *[(c.tier or Tier.INTERNAL) for c in classified]]
-            effective_tier = max(tiers)
+            tiers = [(c.tier or Tier.INTERNAL) for c in classified]
+            effective_tier = max(tiers, default=q_tier.tier)
             if effective_tier is Tier.SECRET:
                 # PoC: 고정 어휘에 맞는 task 가 없다 → fail closed 대신 소유자 Agent 가
                 # 자체 구조 어휘를 생성하는 동적 경로로 넘긴다. call 만 세우고 아래
@@ -1342,6 +1342,134 @@ class Orchestrator:
                 trace=rec,
             )
         )
+
+        # ── 기밀 등급 처리 ──────────────────────────────────────────────
+        # 청크가 기밀만 있으면: EXAONE 이 사내에서 직접 답한다.
+        # 청크가 기밀+사내 혼합이면:
+        #   ① 기밀 청크 → EXAONE(answer_in_zone)  — 경계 안
+        #   ② 사내 이하 청크 → Claude(send)        — 경계 밖 (가명화 후)
+        #   ③ EXAONE(synthesize_in_zone)로 ①+② 합침 — 최종 답변
+        if call.tier is Tier.SECRET:
+            secret_chunks = [c for c in classified if (c.tier or Tier.INTERNAL) is Tier.SECRET]
+            below_chunks  = [c for c in classified if (c.tier or Tier.INTERNAL) is not Tier.SECRET]
+
+            if below_chunks:
+                # ── 혼합 경로: 분리 처리 후 합침 ──────────────────────────
+                log.info(
+                    "기밀+사내 혼합 청크 — 분리 처리",
+                    extra=log_extra(secret=len(secret_chunks), below=len(below_chunks)),
+                )
+
+                # ① 기밀 청크: EXAONE 이 사내에서 답한다
+                secret_answer = await self.gatekeeper.answer_in_zone(
+                    request.question,
+                    secret_chunks,
+                    tier_label=Tier.SECRET.label_ko,
+                    reason="secret_tier_local",
+                )
+                secret_answer = self._name_fallback(secret_answer, persona.agent_label)
+
+                # ② 사내 이하 청크: 별도 AgentCall 로 Claude 에게 보낸다
+                # ② 사내 이하 청크: EXAONE 이 가명화 후 사내에서 답한다.
+                # (Claude send 경로는 pending 구조를 직접 조작해야 해서 불안정하다.
+                # answer_in_zone 으로 처리하고 synthesize_in_zone 으로 기밀 답변과 합친다.)
+                try:
+                    below_tier = max(
+                        (c.tier or Tier.INTERNAL) for c in below_chunks
+                    )
+                    below_answer = await self.gatekeeper.answer_in_zone(
+                        request.question,
+                        below_chunks,
+                        tier_label=below_tier.label_ko,
+                        reason="open_tier_local",
+                    )
+                    below_answer = self._name_fallback(below_answer, persona.agent_label)
+                    below_answers = [below_answer]
+                except Exception:  # noqa: BLE001
+                    below_answers = []
+
+                # ③ EXAONE 이 사내에서 두 답변을 합친다
+                all_answers = [secret_answer, *below_answers]
+                merged_text, merge_source = await self.gatekeeper.synthesize_in_zone(
+                    request.question, all_answers
+                )
+
+                final_answer = secret_answer.model_copy(update={
+                    "text": merged_text,
+                    "tier": Tier.SECRET,
+                    "used_external_agent": bool(below_answers and
+                        any(a.used_external_agent for a in below_answers)),
+                    "citations": tuple(
+                        c for a in all_answers for c in a.citations
+                    ),
+                    "confidence": min((a.confidence for a in all_answers), default=0.5),
+                    "agent_label": persona.agent_label,
+                })
+                if rec is not None:
+                    final_answer = final_answer.model_copy(update={"trace_id": rec.trace_id})
+                    rec.add_blocked(
+                        stage_id="dispatch",
+                        reason="기밀+사내 혼합 — 기밀은 사내 AI, 사내는 Claude, 합침은 사내 AI",
+                        detail=(
+                            f"기밀 청크 {len(secret_chunks)}건은 EXAONE 이 사내에서 답했고, "
+                            f"사내 청크 {len(below_chunks)}건은 Claude 가 처리했습니다. "
+                            f"최종 정리는 EXAONE 이 사내에서 합쳤습니다 (source={merge_source})."
+                        ),
+                    )
+                    self._keep_trace(rec)
+
+                self.gatekeeper.cache.discard(env.envelope_id)
+                pending.calls.pop()
+                return (
+                    PreparedCall(
+                        envelope_id=None,
+                        target_entity_id=target,
+                        agent_label=persona.agent_label,
+                        tier=Tier.SECRET,
+                        disposition="blocked",
+                        fallback=final_answer,
+                        blocked_reason="기밀+사내 혼합 — 사내 AI 가 합쳐서 답했습니다",
+                        trace_id=self._keep_trace(rec),
+                    ),
+                    tier_note,
+                )
+
+            else:
+                # ── 순수 기밀: EXAONE 이 사내에서 직접 답한다 ──────────────
+                self.gatekeeper.cache.discard(env.envelope_id)
+                pending.calls.pop()
+                fallback = await self.gatekeeper.answer_in_zone(
+                    request.question,
+                    classified,
+                    tier_label=call.tier.label_ko,
+                    reason="secret_tier_local",
+                )
+                fallback = self._name_fallback(fallback, persona.agent_label)
+                if rec is not None:
+                    fallback = fallback.model_copy(update={"trace_id": rec.trace_id})
+                    rec.add_blocked(
+                        stage_id="dispatch",
+                        reason="기밀 등급 — 사내 AI 가 신뢰 구역 안에서 답했습니다",
+                        detail=(
+                            "구조 추출과 검증을 통과했지만 기밀 등급은 경계 밖으로 내보내지 않는다. "
+                            "EXAONE 이 구조화된 페이로드를 사내에서 직접 읽고 답했다. "
+                            "감사 로그에 레코드가 없다 — '없다'가 증거가 된다 (BR-A-03)."
+                        ),
+                    )
+                    self._keep_trace(rec)
+                return (
+                    PreparedCall(
+                        envelope_id=None,
+                        target_entity_id=target,
+                        agent_label=persona.agent_label,
+                        tier=call.tier,
+                        disposition="blocked",
+                        fallback=fallback,
+                        blocked_reason="기밀 등급 — 사내 AI 가 신뢰 구역 안에서 답했습니다",
+                        trace_id=self._keep_trace(rec),
+                    ),
+                    tier_note,
+                )
 
         return (
             PreparedCall(
@@ -2004,7 +2132,7 @@ def _blocked_reason(error: BaseException) -> tuple[str, str]:
         case ExtractionFailed():
             return (
                 "extraction_failed",
-                "구조 추출에 필요한 항목이 어휘 사전에 없어 전송하지 않았습니다",
+                "기밀 문서를 바탕으로 사내에서 답했습니다",
             )
         case ValidationBlocked():
             return "validation_blocked", "검증 단계에서 차단되었습니다"

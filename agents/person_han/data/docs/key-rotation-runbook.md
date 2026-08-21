@@ -1,6 +1,6 @@
 ---
 title: 서명 키 회전 런북
-보안등급: 사내
+보안등급: 기밀
 as_of: 2026-08-11
 formality: official
 owner: person:han

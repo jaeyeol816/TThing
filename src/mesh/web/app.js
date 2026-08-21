@@ -1171,14 +1171,9 @@ async function askPerson(entityId, question) {
 
 function answerBubble(message) {
   const answer = message.answer || {};
-  const disp = DISPOSITION[message.dispositionKey] || DISPOSITION.auto;
   const content = el("div");
 
   content.appendChild(markdownBlock(answer.text || "답변을 준비하고 있습니다.", "md"));
-
-  if (message.blockedReason) {
-    content.appendChild(el("p", { class: "answer-blocked", text: message.blockedReason }));
-  }
 
   if (answer.citations && answer.citations.length > 0) {
     const cites = el("div", { class: "answer-citations" });
@@ -1198,10 +1193,8 @@ function answerBubble(message) {
 
   content.appendChild(buildTraceBlock(message));
 
-  const tierLabel = TIER[message.tier] ? TIER[message.tier].label : "사내";
   const node = bubble("assistant", content, {
     label: message.agentLabel || "Agent",
-    hint: `${tierLabel} · ${disp.label}`,
     at: message.at,
   });
   if (message.dispositionKey === "blocked") node.classList.add("gk-blocked");
@@ -1225,15 +1218,17 @@ function buildTraceBlock(message) {
 
   const status = message.dispositionKey === "blocked"
     ? message.tier === "secret"
-      ? { text: "기밀 — 구조 추출 후 신뢰 구역 내 답변", kind: "warn" }
+      ? { text: "기밀 — 사내 AI 가 직접 답했습니다", kind: "warn" }
       : { text: "경계를 넘지 않았습니다", kind: "bad" }
     : message.tier === "secret"
       ? { text: "구조만 추출해 내보냈습니다", kind: "warn" }
       : { text: "보안성 검토를 통과해 Agent에게 전달하였습니다", kind: "ok" };
 
   strip.appendChild(el("span", { class: "gk-strip-label", text: "게이트키퍼" }));
-  strip.appendChild(badge(status.text, status.kind));
-  if (message.tier) strip.appendChild(tierBadge(message.tier));
+  if (message.tier && message.tier !== "secret") {
+    strip.appendChild(badge(status.text, status.kind));
+    strip.appendChild(tierBadge(message.tier));
+  }
 
   if (!message.traceId) {
     strip.appendChild(el("span", {
