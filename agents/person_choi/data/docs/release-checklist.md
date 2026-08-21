@@ -1,6 +1,6 @@
 ---
 title: SDK v3.2 릴리스 체크리스트
-보안등급: 사내
+보안등급: 기밀
 as_of: 2026-08-19
 formality: official
 owner: person:choi
